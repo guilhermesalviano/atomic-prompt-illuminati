@@ -20,6 +20,7 @@ import (
 	"github.com/guibs/atomic-prompt-illuminati/internal/config"
 	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
 	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
 )
 
 // tab is one of the detail views for the selected run.
@@ -61,6 +62,14 @@ type App struct {
 
 	confirmQuit bool
 
+	// The right aside shows the selected run's full diff.
+	showAside   bool
+	asideFits   bool // whether the last render had room for the aside
+	asideScroll int
+	asideMax    int
+	asideH      int
+	asideCache  contentCache
+
 	width   int
 	height  int
 	frame   int
@@ -82,7 +91,7 @@ type contentCache struct {
 
 // NewApp builds the dashboard, loading historical runs from baseDir.
 func NewApp(cfg *config.Config, baseDir string) *App {
-	a := &App{cfg: cfg, width: 100, height: 30, follow: true}
+	a := &App{cfg: cfg, width: 100, height: 30, follow: true, showAside: true}
 	runs, _ := artifact.List(baseDir)
 	for _, r := range runs {
 		a.entries = append(a.entries, entryFromRun(r))
@@ -201,6 +210,7 @@ type Entry struct {
 	ver        int // bumped on every change; keys the render cache
 	logsLoaded bool
 	diffAt     time.Time
+	diffBusy   bool // a live snapshot is in flight
 }
 
 func newStages() map[agent.Kind]*StageInfo {
@@ -328,13 +338,10 @@ func (e *Entry) ensureLogs() {
 	e.touch()
 }
 
-// ensureDiff loads diff.patch, re-reading it at most every two seconds while
-// the run is live.
+// ensureDiff loads diff.patch once for finished runs. Live runs are refreshed
+// from the worktree itself by snapshotDiff.
 func (e *Entry) ensureDiff() {
-	if e.Run == nil || e.Run.Dir == "" {
-		return
-	}
-	if !e.diffAt.IsZero() && (!e.Live || time.Since(e.diffAt) < 2*time.Second) {
+	if e.Live || e.Run == nil || e.Run.Dir == "" || !e.diffAt.IsZero() {
 		return
 	}
 	e.diffAt = time.Now()
@@ -422,8 +429,34 @@ type (
 		err   error
 		run   *artifact.Run
 	}
+	diffMsg struct {
+		entry *Entry
+		diff  string
+		err   error
+	}
 	tickMsg time.Time
 )
+
+const diffRefresh = 1500 * time.Millisecond
+
+// snapshotDiff reads the live worktree diff off the UI goroutine. Only the
+// selected run is polled so idle runs cost nothing.
+func (a *App) snapshotDiff() tea.Cmd {
+	e := a.current()
+	if e == nil || !e.Live || e.diffBusy || e.Run == nil || e.Run.Worktree == "" ||
+		time.Since(e.diffAt) < diffRefresh {
+		return nil
+	}
+	e.diffBusy, e.diffAt = true, time.Now()
+	dir := e.Run.Worktree
+	return func() tea.Msg {
+		if _, err := os.Stat(dir); err != nil {
+			return diffMsg{entry: e, err: err}
+		}
+		d, err := worktree.Snapshot(dir)
+		return diffMsg{entry: e, diff: d, err: err}
+	}
+}
 
 func tick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -446,7 +479,18 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch t := msg.(type) {
 	case tickMsg:
 		a.frame++
-		return a, tick()
+		return a, tea.Batch(tick(), a.snapshotDiff())
+
+	case diffMsg:
+		a.mutate(t.entry, func(e *Entry) {
+			e.diffBusy = false
+			// A snapshot landing after the run finished would show the
+			// post-commit (empty) tree; diff.patch is authoritative then.
+			if t.err == nil && e.Live && t.diff != e.Diff {
+				e.Diff = t.diff
+				e.touch()
+			}
+		})
 
 	case tea.WindowSizeMsg:
 		a.width, a.height = t.Width, t.Height
@@ -596,6 +640,16 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.scroll, a.follow = 0, false
 	case "G", "end":
 		a.scroll, a.follow = a.lastMax, true
+	case "d":
+		if a.asideFits {
+			a.showAside = !a.showAside
+		} else {
+			a.setTab(tabDiff)
+		}
+	case "]":
+		a.asideScroll = min(a.asideScroll+max(1, a.asideH/2), a.asideMax)
+	case "[":
+		a.asideScroll = max(a.asideScroll-max(1, a.asideH/2), 0)
 	case "a":
 		a.answer(ui.Approve)
 	case "f":
@@ -649,6 +703,7 @@ func (a *App) move(delta int) {
 	next := min(max(a.cursor+delta, 0), len(a.entries)-1)
 	if next != a.cursor {
 		a.cursor = next
+		a.asideScroll = 0
 		a.resetScroll()
 	}
 }

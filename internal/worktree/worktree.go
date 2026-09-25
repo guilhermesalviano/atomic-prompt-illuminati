@@ -106,6 +106,32 @@ func Diff(worktree string) (string, error) {
 	return out, nil
 }
 
+// Snapshot returns the worktree's changes against HEAD, including untracked
+// files, without touching the index. It is safe to call while an agent is
+// working in the worktree, unlike Diff which marks files intent-to-add.
+func Snapshot(worktree string) (string, error) {
+	out, err := git(worktree, "diff", "HEAD", "--no-color", "--no-ext-diff")
+	if err != nil {
+		return "", err
+	}
+	others, err := git(worktree, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return out, err
+	}
+	var b strings.Builder
+	b.WriteString(out)
+	for _, f := range strings.Split(others, "\x00") {
+		if f == "" {
+			continue
+		}
+		// --no-index exits 1 when the files differ, which is always the case
+		// here, so the output is kept regardless of the error.
+		d, _ := git(worktree, "diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", f)
+		b.WriteString(d)
+	}
+	return b.String(), nil
+}
+
 // Commit stages everything and creates a commit, returning the new SHA. It is a
 // no-op when there is nothing to commit.
 func Commit(worktree, message string) (string, error) {

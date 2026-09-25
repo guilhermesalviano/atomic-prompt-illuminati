@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
@@ -243,5 +244,43 @@ func TestViewFillsTerminalExactly(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestDiffAsideOnWideTerminals(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("x", "/repo")
+	e.Diff = "diff --git a/f.go b/f.go\n+added line\n-removed line\n"
+	a.entries = []*Entry{e}
+
+	a.width, a.height = 180, 40
+	if v := a.View(); !strings.Contains(v, "+added line") || !strings.Contains(v, "DIFF") {
+		t.Fatalf("aside missing on wide terminal:\n%s", v)
+	}
+	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if v := a.View(); strings.Contains(v, "+added line") {
+		t.Fatal("d should hide the aside")
+	}
+
+	a.showAside = true
+	a.width = 100
+	if v := a.View(); strings.Contains(v, "+added line") {
+		t.Fatal("aside should not squeeze a narrow terminal")
+	}
+	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if a.tab != tabDiff {
+		t.Fatal("d on a narrow terminal should open the Diff tab")
+	}
+}
+
+func TestLiveDiffIgnoredAfterFinish(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("x", "/repo")
+	e.Diff = "final"
+	e.Live = false
+	a.entries = []*Entry{e}
+	a.Update(diffMsg{entry: e, diff: ""})
+	if e.Diff != "final" {
+		t.Fatal("late snapshot overwrote the finished run's diff")
 	}
 }

@@ -168,11 +168,19 @@ func renderDiff(diff string, w int) []string {
 	if strings.TrimSpace(diff) == "" {
 		return emptyNote("No changes yet — the diff appears once the executor edits the worktree.", w)
 	}
+	return append([]string{diffSummary(diff)}, diffBody(diff, w)...)
+}
+
+// diffSummary renders "N file(s)  +A −D".
+func diffSummary(diff string) string {
 	files, add, del := diffStats(diff)
-	out := []string{
-		mutedStyle.Render(fmt.Sprintf("%d file(s)  ", files)) +
-			greenStyle.Render(fmt.Sprintf("+%d", add)) + " " + redStyle.Render(fmt.Sprintf("−%d", del)),
-	}
+	return mutedStyle.Render(fmt.Sprintf("%d file(s)  ", files)) +
+		greenStyle.Render(fmt.Sprintf("+%d", add)) + " " + redStyle.Render(fmt.Sprintf("−%d", del))
+}
+
+// diffBody colors each line of a unified diff.
+func diffBody(diff string, w int) []string {
+	var out []string
 	for _, l := range strings.Split(strings.TrimRight(diff, "\n"), "\n") {
 		l = strings.ReplaceAll(l, "\t", "    ")
 		switch {

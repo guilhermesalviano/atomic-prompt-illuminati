@@ -102,3 +102,28 @@ func TestHeadAndClean(t *testing.T) {
 		t.Fatal("expected dirty repo")
 	}
 }
+
+func TestSnapshotIncludesUntrackedWithoutStaging(t *testing.T) {
+	repo := setupRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "new.txt"), []byte("fresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := Snapshot(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"+changed", "new.txt", "+fresh"} {
+		if !strings.Contains(diff, want) {
+			t.Errorf("snapshot missing %q:\n%s", want, diff)
+		}
+	}
+	if staged := gitRun(t, repo, "diff", "--cached", "--name-only"); strings.TrimSpace(staged) != "" {
+		t.Errorf("snapshot touched the index: %q", staged)
+	}
+	if st := gitRun(t, repo, "status", "--porcelain"); !strings.Contains(st, "?? new.txt") {
+		t.Errorf("new.txt should still be untracked:\n%s", st)
+	}
+}

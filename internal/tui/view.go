@@ -22,16 +22,83 @@ const (
 func (a *App) View() string {
 	w, h := max(a.width, 60), max(a.height, 16)
 
+	sideW, mainW, asideW := layout(w)
+	a.asideFits = asideW > 0 // read by the footer's key hints
+
 	header := a.renderHeader(w)
 	footer := a.renderFooter(w)
 	bodyH := max(h-lipgloss.Height(header)-lipgloss.Height(footer), 8)
 
-	sideW := min(max(w*3/10, 28), 44)
-	mainW := w - sideW
-	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		a.renderSidebar(sideW, bodyH),
-		a.renderMain(mainW, bodyH))
+	if !a.showAside {
+		mainW, asideW = mainW+asideW, 0
+	}
+	cols := []string{a.renderSidebar(sideW, bodyH), a.renderMain(mainW, bodyH)}
+	if asideW > 0 {
+		cols = append(cols, a.renderAside(asideW, bodyH))
+	}
+	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+// layout splits the width into sidebar, main pane and diff aside. The aside
+// only appears when the main pane keeps enough room for the pipeline cards.
+func layout(w int) (side, main, aside int) {
+	const minMain = 64
+	side = min(max(w/5, 26), 38)
+	aside = min(max(w*36/100, 46), 110)
+	if w-side-aside >= minMain {
+		return side, w - side - aside, aside
+	}
+	side = min(max(w*3/10, 28), 44)
+	return side, w - side, 0
+}
+
+// renderAside shows the selected run's whole diff: the live worktree while it
+// runs, the staged diff.patch once it has finished.
+func (a *App) renderAside(w, h int) string {
+	inner := w - 4
+	rows := h - 2
+	e := a.current()
+	if e == nil {
+		return panel("DIFF", emptyNote("Select a run to see its changes.", inner), w, h, cFaint)
+	}
+	e.ensureDiff()
+
+	c := &a.asideCache
+	if !(c.entry == e && c.width == inner && c.ver == e.ver && c.lines != nil) {
+		var lines []string
+		if strings.TrimSpace(e.Diff) == "" {
+			msg := "No changes yet — they appear here as the executor edits the worktree."
+			if !e.Live {
+				msg = "This run left no diff."
+			}
+			lines = emptyNote(msg, inner)
+		} else {
+			lines = diffBody(e.Diff, inner)
+			for len(lines) > 0 && lines[0] == "" {
+				lines = lines[1:]
+			}
+		}
+		*c = contentCache{entry: e, width: inner, ver: e.ver, lines: lines}
+	}
+	lines := c.lines
+
+	a.asideH = rows
+	a.asideMax = max(0, len(lines)-rows)
+	a.asideScroll = min(a.asideScroll, a.asideMax)
+	view := lines[a.asideScroll:min(len(lines), a.asideScroll+rows)]
+
+	title := "DIFF"
+	if strings.TrimSpace(e.Diff) != "" {
+		title += " " + diffSummary(e.Diff)
+	}
+	if e.Live {
+		title += " " + cyanStyle.Render("● live")
+	}
+	if a.asideMax > 0 {
+		title += " " + mutedStyle.Render(fmt.Sprintf("%d%%", a.asideScroll*100/a.asideMax))
+	}
+	return panel(title, view, w, h, cFaint)
 }
 
 // --- header -----------------------------------------------------------------
@@ -596,12 +663,23 @@ func (a *App) renderFooter(w int) string {
 		default:
 			hints = []string{keyHint("f", "fix"), keyHint("r", "reject")}
 		}
-		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), keyHint("q", "quit"))
+		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
 	default:
 		hints = []string{keyHint("n", "new prompt"), keyHint("↑↓", "select"), keyHint("tab", "views"),
-			keyHint("pgup/pgdn", "scroll"), keyHint("g/G", "top/bottom"), keyHint("q", "quit")}
+			keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit")}
 	}
 	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
+}
+
+func (a *App) diffHint() string {
+	switch {
+	case !a.asideFits:
+		return keyHint("d", "diff")
+	case a.showAside:
+		return keyHint("[ ]", "scroll diff") + "  " + keyHint("d", "hide diff")
+	default:
+		return keyHint("d", "show diff")
+	}
 }
 
 // --- layout helpers ---------------------------------------------------------
