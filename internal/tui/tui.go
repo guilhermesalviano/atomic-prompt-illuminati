@@ -159,6 +159,30 @@ func (s *Session) ReviewGate(ctx context.Context, review *contracts.Review, diff
 	return s.gate(ctx, &gateReq{kind: gateReview, review: review, diff: diff})
 }
 
+func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
+	req := &gateReq{
+		kind:       gateAgent,
+		agentKind:  kind,
+		failed:     failed,
+		options:    options,
+		preferred:  preferred,
+		cause:      cause,
+		agentReply: make(chan string, 1),
+	}
+	for i, o := range options {
+		if o == preferred {
+			req.cursor = i
+		}
+	}
+	s.app.send(gateEventMsg{entry: s.entry, req: req})
+	select {
+	case c := <-req.agentReply:
+		return c, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
 func (s *Session) gate(ctx context.Context, req *gateReq) (ui.Decision, error) {
 	req.reply = make(chan ui.Decision, 1)
 	s.app.send(gateEventMsg{entry: s.entry, req: req})
@@ -392,6 +416,7 @@ type gateKind int
 const (
 	gatePlan gateKind = iota
 	gateReview
+	gateAgent
 )
 
 type gateReq struct {
@@ -400,6 +425,15 @@ type gateReq struct {
 	review *contracts.Review
 	diff   string
 	reply  chan ui.Decision
+
+	// gateAgent fields: choosing a replacement adapter after a stage failed.
+	agentKind  agent.Kind
+	failed     string
+	options    []string
+	preferred  string
+	cause      error
+	cursor     int
+	agentReply chan string
 }
 
 type (
@@ -538,9 +572,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		if a.current() == t.entry {
 			a.inputFocus = false
-			if t.req.kind == gatePlan {
+			switch t.req.kind {
+			case gatePlan:
 				a.setTab(tabPlan)
-			} else {
+			case gateReview:
 				a.setTab(tabReview)
 			}
 		}
@@ -615,6 +650,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.input = append(a.input, msg.Runes...)
 		}
 		return a, nil
+	}
+
+	if e := a.current(); e != nil && e.Gate != nil && e.Gate.kind == gateAgent {
+		return a.handleAgentKey(e.Gate, msg)
 	}
 
 	switch msg.String() {
@@ -728,6 +767,52 @@ func (a *App) scrollBy(d int) {
 	a.follow = cur >= a.lastMax && a.tab == tabActivity
 }
 
+// handleAgentKey drives the adapter-selection prompt shown after a stage fails.
+func (a *App) handleAgentKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	move := func(d int) {
+		if n := len(g.options); n > 0 {
+			g.cursor = (g.cursor + d + n) % n
+			if e := a.current(); e != nil {
+				e.touch()
+			}
+		}
+	}
+	switch msg.String() {
+	case "ctrl+c":
+		return a.quit()
+	case "up", "k", "shift+tab":
+		move(-1)
+	case "down", "j", "tab":
+		move(1)
+	case "enter":
+		if g.cursor >= 0 && g.cursor < len(g.options) {
+			a.answerAgent(g.options[g.cursor])
+		} else {
+			a.answerAgent("")
+		}
+	case "esc":
+		a.answerAgent("")
+	default:
+		if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+			if i := int(s[0] - '1'); i < len(g.options) {
+				a.answerAgent(g.options[i])
+			}
+		}
+	}
+	return a, nil
+}
+
+// answerAgent resolves a pending adapter-selection prompt. An empty name aborts.
+func (a *App) answerAgent(name string) {
+	e := a.current()
+	if e == nil || e.Gate == nil || e.Gate.kind != gateAgent || e.Gate.agentReply == nil {
+		return
+	}
+	e.Gate.agentReply <- name
+	e.Gate = nil
+	e.touch()
+}
+
 // answer resolves the selected run's pending gate. Keys that do not apply to
 // the current gate are ignored.
 func (a *App) answer(d ui.Decision) {
@@ -750,6 +835,8 @@ func (a *App) answer(d ui.Decision) {
 // be approved or rejected; a failed review can only be fixed or rejected.
 func gateAllows(g *gateReq, d ui.Decision) bool {
 	switch g.kind {
+	case gateAgent:
+		return false
 	case gatePlan:
 		return d != ui.Fix
 	case gateReview:

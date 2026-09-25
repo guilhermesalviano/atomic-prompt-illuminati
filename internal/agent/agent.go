@@ -17,6 +17,9 @@ const (
 	Reviewer Kind = "reviewer"
 )
 
+// Known lists the adapter names the orchestrator can invoke.
+func Known() []string { return []string{"claude", "codex", "opencode"} }
+
 // Usage captures token/cost accounting when the CLI reports it.
 type Usage struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`

@@ -488,6 +488,9 @@ func (a *App) renderGate(e *Entry, w int) []string {
 	var title string
 	var chips []string
 	switch e.Gate.kind {
+	case gateAgent:
+		title = fmt.Sprintf("%s AGENT FAILED — choose another adapter", strings.ToUpper(string(e.Gate.agentKind)))
+		chips = []string{chip("↑↓", "choose", cCyan), chip("enter", "use", cGreen), chip("esc", "abort", cRed)}
 	case gatePlan:
 		title = "PLAN READY — approve to start the executor"
 		chips = []string{chip("a", "approve", cGreen), chip("r", "reject", cRed)}
@@ -499,6 +502,30 @@ func (a *App) renderGate(e *Entry, w int) []string {
 			title = "REVIEW FAILED — send the issues back or stop"
 			chips = []string{chip("f", "fix", cAmber), chip("r", "reject", cRed)}
 		}
+	}
+	if e.Gate.kind == gateAgent {
+		lines := []string{bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2))}
+		if e.Gate.cause != nil {
+			lines = append(lines, bar+faintStyle.Render(truncate(fmt.Sprintf("%s failed: %v", e.Gate.failed, e.Gate.cause), w-2)))
+		}
+		for i, o := range e.Gate.options {
+			cur := i == e.Gate.cursor
+			mark := "  "
+			if cur {
+				mark = goldStyle.Render("❯ ")
+			}
+			label := fmt.Sprintf("%d. %s", i+1, o)
+			if o == e.Gate.preferred {
+				label += " (preferred)"
+			}
+			style := textStyle
+			if cur {
+				style = goldStyle.Bold(true)
+			}
+			lines = append(lines, bar+mark+style.Render(truncate(label, w-4)))
+		}
+		lines = append(lines, bar+truncate(strings.Join(chips, "   "), w-2))
+		return lines
 	}
 	return []string{
 		bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2)),
@@ -656,6 +683,8 @@ func (a *App) renderFooter(w int) string {
 		hints = []string{keyHint("enter", "run"), keyHint("esc", "back"), keyHint("ctrl+u", "clear"), keyHint("ctrl+w", "delete word")}
 	case e != nil && e.Gate != nil:
 		switch {
+		case e.Gate.kind == gateAgent:
+			hints = []string{keyHint("↑↓", "choose"), keyHint("enter", "use"), keyHint("esc", "abort")}
 		case e.Gate.kind == gatePlan:
 			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
 		case e.Gate.review != nil && e.Gate.review.Pass():

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,9 @@ func (g *recordingGate) PlanGate(context.Context, *contracts.Plan, string) (ui.D
 func (g *recordingGate) ReviewGate(context.Context, *contracts.Review, string) (ui.Decision, error) {
 	g.reviewGates++
 	return ui.Approve, nil
+}
+func (g *recordingGate) SelectAgent(context.Context, agent.Kind, string, []string, string, error) (string, error) {
+	return "", nil
 }
 
 func gitRun(t *testing.T, dir string, args ...string) {
@@ -187,6 +191,57 @@ func TestExecuteFixLoopThenPass(t *testing.T) {
 	}
 	if p.Run.Iteration != 1 {
 		t.Fatalf("iteration = %d, want 1", p.Run.Iteration)
+	}
+}
+
+type fallbackGate struct {
+	recordingGate
+	choose string
+}
+
+func (g *fallbackGate) SelectAgent(context.Context, agent.Kind, string, []string, string, error) (string, error) {
+	return g.choose, nil
+}
+
+func TestExecutorFallsBackOnFailure(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	gate := &fallbackGate{choose: "opencode"}
+
+	codexRuns, opencodeExecRuns := 0, 0
+	factory := func(name string) (agent.Agent, error) {
+		switch name {
+		case "claude":
+			return fakeAgent{"claude", agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: planJSON(t)}, nil
+			}}, nil
+		case "codex":
+			return fakeAgent{"codex", agent.Executor, func(context.Context, agent.Request) (*agent.Result, error) {
+				codexRuns++
+				return nil, errors.New("codex not working")
+			}}, nil
+		case "opencode":
+			return fakeAgent{"opencode", agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				if r.OutFile == "" {
+					return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+				}
+				opencodeExecRuns++
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"wrote"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
+	}
+
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	if err := p.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if codexRuns != 1 || opencodeExecRuns != 1 {
+		t.Fatalf("codex=%d opencode=%d, want 1/1", codexRuns, opencodeExecRuns)
+	}
+	if p.Run.State != artifact.StateDone {
+		t.Fatalf("state = %s, want done", p.Run.State)
 	}
 }
 

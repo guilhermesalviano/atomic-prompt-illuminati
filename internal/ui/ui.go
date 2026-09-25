@@ -4,6 +4,7 @@ package ui
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
 	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
@@ -43,6 +44,10 @@ type Gate interface {
 	PlanGate(ctx context.Context, plan *contracts.Plan, diff string) (Decision, error)
 	// ReviewGate asks the user to approve, reject or request a fix.
 	ReviewGate(ctx context.Context, review *contracts.Review, diff string) (Decision, error)
+	// SelectAgent asks the user to pick a replacement adapter after `failed`
+	// could not run a stage. options lists the adapters still untried and
+	// preferred hints at the configured fallback. It returns "" to give up.
+	SelectAgent(ctx context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error)
 	// Close releases terminal resources.
 	Close()
 }
@@ -66,4 +71,24 @@ func (a AutoApprove) ReviewGate(_ context.Context, review *contracts.Review, dif
 	a.Inner.Info("[--yes] auto-approving review")
 	a.Inner.Info(RenderReview(review))
 	return Approve, nil
+}
+
+func (a AutoApprove) SelectAgent(_ context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
+	a.Inner.Info(fmt.Sprintf("[--yes] %s agent %q failed: %v", kind, failed, cause))
+	pick := ""
+	for _, o := range options {
+		if o == preferred {
+			pick = o
+			break
+		}
+	}
+	if pick == "" && len(options) > 0 {
+		pick = options[0]
+	}
+	if pick == "" {
+		a.Inner.Info("[--yes] no fallback agent available; aborting")
+		return "", nil
+	}
+	a.Inner.Info("[--yes] falling back to " + pick)
+	return pick, nil
 }

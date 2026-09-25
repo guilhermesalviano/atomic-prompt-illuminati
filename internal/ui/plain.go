@@ -74,6 +74,53 @@ func (p *Plain) ReviewGate(_ context.Context, review *contracts.Review, diff str
 	return p.ask("Review failed. [f]ix/[r]eject: ", map[string]Decision{"f": Fix, "": Fix, "r": Reject, "a": Approve})
 }
 
+func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
+	fmt.Fprintf(p.out, "\n=== AGENT FAILURE (%s) ===\n", kind)
+	fmt.Fprintf(p.out, "agent %q could not run: %v\n", failed, cause)
+	if len(options) == 0 {
+		fmt.Fprintln(p.out, "no alternative agents available; aborting")
+		return "", nil
+	}
+	if p.autoApprove {
+		pick := options[0]
+		for _, o := range options {
+			if o == preferred {
+				pick = o
+				break
+			}
+		}
+		fmt.Fprintf(p.out, "[--yes] falling back to %s\n", pick)
+		return pick, nil
+	}
+	for i, o := range options {
+		mark := " "
+		if o == preferred {
+			mark = "*"
+		}
+		fmt.Fprintf(p.out, "  %d%s %s\n", i+1, mark, o)
+	}
+	for {
+		fmt.Fprintf(p.out, "Choose an agent [1-%d, name, or enter to abort]: ", len(options))
+		line, err := p.in.ReadString('\n')
+		if err != nil && line == "" {
+			if err == io.EOF {
+				return "", nil
+			}
+			return "", err
+		}
+		key := strings.ToLower(strings.TrimSpace(line))
+		if key == "" {
+			return "", nil
+		}
+		for i, o := range options {
+			if key == o || key == fmt.Sprint(i+1) {
+				return o, nil
+			}
+		}
+		fmt.Fprintln(p.out, "unrecognized input")
+	}
+}
+
 func (p *Plain) ask(prompt string, opts map[string]Decision) (Decision, error) {
 	for {
 		fmt.Fprint(p.out, prompt)

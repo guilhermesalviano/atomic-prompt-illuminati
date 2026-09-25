@@ -49,10 +49,6 @@ func writeEvents(run *artifact.Run, name string, res *agent.Result) {
 
 // plan runs the planner with one validation retry.
 func (p *Pipeline) plan(ctx context.Context) (*contracts.Plan, error) {
-	a, err := p.agentFor(p.Cfg.Models.Planner.Agent)
-	if err != nil {
-		return nil, err
-	}
 	if err := p.Run.SetState(artifact.StatePlanning); err != nil {
 		return nil, err
 	}
@@ -62,17 +58,20 @@ func (p *Pipeline) plan(ctx context.Context) (*contracts.Plan, error) {
 	var correction string
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		res, err := a.Run(ctx, agent.Request{
-			Dir:          p.worktreePath,
-			Prompt:       base + correction,
-			System:       contracts.PlannerPrompt,
-			Model:        p.Cfg.Models.Planner.Model,
-			Variant:      p.Cfg.Models.Planner.Variant,
-			ExtraArgs:    p.Cfg.Models.Planner.ExtraArgs,
-			SchemaInline: contracts.PlanSchema,
-			BudgetUSD:    p.Cfg.PlannerBudgetUSD,
-			Timeout:      p.Cfg.Timeouts.Planner.Duration(),
-			Observe:      p.Gate.Line,
+		spec := p.Cfg.Models.Planner
+		res, err := p.runStage(ctx, agent.Planner, func(a agent.Agent, model string) (*agent.Result, error) {
+			return a.Run(ctx, agent.Request{
+				Dir:          p.worktreePath,
+				Prompt:       base + correction,
+				System:       contracts.PlannerPrompt,
+				Model:        model,
+				Variant:      spec.Variant,
+				ExtraArgs:    spec.ExtraArgs,
+				SchemaInline: contracts.PlanSchema,
+				BudgetUSD:    p.Cfg.PlannerBudgetUSD,
+				Timeout:      p.Cfg.Timeouts.Planner.Duration(),
+				Observe:      p.Gate.Line,
+			})
 		})
 		writeEvents(p.Run, "planner.events.jsonl", res)
 		p.addUsage(res)
@@ -104,10 +103,6 @@ func (p *Pipeline) plan(ctx context.Context) (*contracts.Plan, error) {
 
 // execute runs the executor. It returns a report when one was produced.
 func (p *Pipeline) execute(ctx context.Context, plan *contracts.Plan, iter int, fix string) (*contracts.ExecReport, error) {
-	a, err := p.agentFor(p.Cfg.Models.Executor.Agent)
-	if err != nil {
-		return nil, err
-	}
 	if err := p.Run.SetState(artifact.StateExecuting); err != nil {
 		return nil, err
 	}
@@ -119,20 +114,23 @@ func (p *Pipeline) execute(ctx context.Context, plan *contracts.Plan, iter int, 
 	}
 	outFile := p.Run.Path(fmt.Sprintf("executor.last.%d.txt", iter))
 
-	res, err := a.Run(ctx, agent.Request{
-		Dir:          p.worktreePath,
-		Prompt:       renderExecutor(p.Opts.Prompt, plan, iter, fix),
-		System:       contracts.ExecutorPrompt,
-		Model:        p.Cfg.Models.Executor.Model,
-		Variant:      p.Cfg.Models.Executor.Variant,
-		ExtraArgs:    p.Cfg.Models.Executor.ExtraArgs,
-		SchemaFile:   schemaPath,
-		OutFile:      outFile,
-		Sandbox:      p.Cfg.Models.Executor.Sandbox,
-		ApproveForMe: p.Cfg.Models.Executor.ApproveForMe,
-		Bypass:       p.Cfg.Models.Executor.Bypass,
-		Timeout:      p.Cfg.Timeouts.Executor.Duration(),
-		Observe:      p.Gate.Line,
+	spec := p.Cfg.Models.Executor
+	res, err := p.runStage(ctx, agent.Executor, func(a agent.Agent, model string) (*agent.Result, error) {
+		return a.Run(ctx, agent.Request{
+			Dir:          p.worktreePath,
+			Prompt:       renderExecutor(p.Opts.Prompt, plan, iter, fix),
+			System:       contracts.ExecutorPrompt,
+			Model:        model,
+			Variant:      spec.Variant,
+			ExtraArgs:    spec.ExtraArgs,
+			SchemaFile:   schemaPath,
+			OutFile:      outFile,
+			Sandbox:      spec.Sandbox,
+			ApproveForMe: spec.ApproveForMe,
+			Bypass:       spec.Bypass,
+			Timeout:      p.Cfg.Timeouts.Executor.Duration(),
+			Observe:      p.Gate.Line,
+		})
 	})
 	writeEvents(p.Run, fmt.Sprintf("executor.events.%d.jsonl", iter), res)
 	p.addUsage(res)
@@ -152,10 +150,6 @@ func (p *Pipeline) execute(ctx context.Context, plan *contracts.Plan, iter int, 
 
 // review runs the reviewer with one validation retry.
 func (p *Pipeline) review(ctx context.Context, plan *contracts.Plan, diff string, iter int) (*contracts.Review, error) {
-	a, err := p.agentFor(p.Cfg.Models.Reviewer.Agent)
-	if err != nil {
-		return nil, err
-	}
 	if err := p.Run.SetState(artifact.StateReviewing); err != nil {
 		return nil, err
 	}
@@ -165,16 +159,19 @@ func (p *Pipeline) review(ctx context.Context, plan *contracts.Plan, diff string
 	var correction string
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		res, err := a.Run(ctx, agent.Request{
-			Dir:       p.worktreePath,
-			Prompt:    base + correction,
-			System:    contracts.ReviewerPrompt,
-			Model:     p.Cfg.Models.Reviewer.Model,
-			Variant:   p.Cfg.Models.Reviewer.Variant,
-			Agent:     p.Cfg.Models.Reviewer.SubAgent,
-			ExtraArgs: p.Cfg.Models.Reviewer.ExtraArgs,
-			Timeout:   p.Cfg.Timeouts.Reviewer.Duration(),
-			Observe:   p.Gate.Line,
+		spec := p.Cfg.Models.Reviewer
+		res, err := p.runStage(ctx, agent.Reviewer, func(a agent.Agent, model string) (*agent.Result, error) {
+			return a.Run(ctx, agent.Request{
+				Dir:       p.worktreePath,
+				Prompt:    base + correction,
+				System:    contracts.ReviewerPrompt,
+				Model:     model,
+				Variant:   spec.Variant,
+				Agent:     spec.SubAgent,
+				ExtraArgs: spec.ExtraArgs,
+				Timeout:   p.Cfg.Timeouts.Reviewer.Duration(),
+				Observe:   p.Gate.Line,
+			})
 		})
 		writeEvents(p.Run, fmt.Sprintf("reviewer.events.%d.jsonl", iter), res)
 		p.addUsage(res)

@@ -39,7 +39,9 @@ func Checks(repo string, agents ...string) []Check {
 	var checks []Check
 	for _, b := range bins {
 		if all || want[b] {
-			checks = append(checks, versionCheck(b, "--version", true))
+			// Non-fatal: a missing CLI is surfaced to the user, who can then
+			// pick another adapter when the stage runs.
+			checks = append(checks, versionCheck(b, "--version", false))
 		}
 	}
 	checks = append(checks, gitRepoCheck(repo))

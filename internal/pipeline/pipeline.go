@@ -46,6 +46,9 @@ type Pipeline struct {
 	Run          *artifact.Run
 	worktreePath string
 	branch       string
+
+	// overrides remembers adapters the user selected after a stage failure.
+	overrides map[agent.Kind]agentChoice
 }
 
 func (p *Pipeline) agentFor(name string) (agent.Agent, error) {

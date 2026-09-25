@@ -35,10 +35,11 @@ func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(),
 
 // ModelSpec configures one agent invocation.
 type ModelSpec struct {
-	Agent     string   `yaml:"agent"`   // adapter: claude | codex | opencode
-	Model     string   `yaml:"model"`   // provider/model
-	Variant   string   `yaml:"variant"` // reasoning effort, provider-specific
-	SubAgent  string   `yaml:"subagent"`
+	Agent     string   `yaml:"agent"`    // adapter: claude | codex | opencode
+	Model     string   `yaml:"model"`    // provider/model
+	Variant   string   `yaml:"variant"`  // reasoning effort, provider-specific
+	SubAgent  string   `yaml:"subagent"` // opencode agent name
+	Fallback  string   `yaml:"fallback"` // adapter offered when Agent fails
 	ExtraArgs []string `yaml:"extra_args"`
 }
 
@@ -47,6 +48,7 @@ type ExecutorSpec struct {
 	Agent        string   `yaml:"agent"`
 	Model        string   `yaml:"model"`
 	Variant      string   `yaml:"variant"`
+	Fallback     string   `yaml:"fallback"`
 	ExtraArgs    []string `yaml:"extra_args"`
 	Sandbox      string   `yaml:"sandbox"`
 	ApproveForMe bool     `yaml:"approve_for_me"`
@@ -55,7 +57,22 @@ type ExecutorSpec struct {
 
 // AsModel returns the shared model fields.
 func (e ExecutorSpec) AsModel() ModelSpec {
-	return ModelSpec{Agent: e.Agent, Model: e.Model, Variant: e.Variant, ExtraArgs: e.ExtraArgs}
+	return ModelSpec{Agent: e.Agent, Model: e.Model, Variant: e.Variant, Fallback: e.Fallback, ExtraArgs: e.ExtraArgs}
+}
+
+// DefaultModelFor returns the built-in model for an adapter, used when a run
+// falls back to an agent that was not configured for the stage.
+func DefaultModelFor(agent string) string {
+	switch strings.ToLower(strings.TrimSpace(agent)) {
+	case "claude":
+		return "opus"
+	case "codex":
+		return "gpt-6-sol"
+	case "opencode":
+		return "opencode-go/deepseek-v4.1-flash"
+	default:
+		return ""
+	}
 }
 
 // Config is the resolved orchestrator configuration.
@@ -94,14 +111,15 @@ type Config struct {
 // Default returns the built-in configuration.
 func Default() *Config {
 	c := &Config{}
-	c.Models.Planner = ModelSpec{Agent: "claude", Model: "opus"}
+	c.Models.Planner = ModelSpec{Agent: "claude", Model: "opus", Fallback: "codex"}
 	c.Models.Executor = ExecutorSpec{
 		Agent:        "codex",
 		Model:        "gpt-6-sol",
+		Fallback:     "opencode",
 		Sandbox:      "workspace-write",
 		ApproveForMe: true,
 	}
-	c.Models.Reviewer = ModelSpec{Agent: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Variant: "high", SubAgent: "plan"}
+	c.Models.Reviewer = ModelSpec{Agent: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Variant: "high", SubAgent: "plan", Fallback: "claude"}
 	c.Loop.MaxIterations = 2
 	c.Gates.AfterPlan = true
 	c.Gates.AfterReview = true
