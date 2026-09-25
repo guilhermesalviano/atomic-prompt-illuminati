@@ -1,0 +1,216 @@
+// Package config loads and defaults the api orchestrator configuration.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Duration is a time.Duration that unmarshals from YAML strings such as "15m".
+type Duration time.Duration
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	*d = Duration(parsed)
+	return nil
+}
+
+// Duration returns the value as a time.Duration.
+func (d Duration) Duration() time.Duration { return time.Duration(d) }
+
+// MarshalYAML renders the duration as a string such as "15m0s".
+func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(), nil }
+
+// ModelSpec configures one agent invocation.
+type ModelSpec struct {
+	Agent     string   `yaml:"agent"`   // adapter: claude | codex | opencode
+	Model     string   `yaml:"model"`   // provider/model
+	Variant   string   `yaml:"variant"` // reasoning effort, provider-specific
+	SubAgent  string   `yaml:"subagent"`
+	ExtraArgs []string `yaml:"extra_args"`
+}
+
+// ExecutorSpec adds executor-only sandbox controls.
+type ExecutorSpec struct {
+	Agent        string   `yaml:"agent"`
+	Model        string   `yaml:"model"`
+	Variant      string   `yaml:"variant"`
+	ExtraArgs    []string `yaml:"extra_args"`
+	Sandbox      string   `yaml:"sandbox"`
+	ApproveForMe bool     `yaml:"approve_for_me"`
+	Bypass       bool     `yaml:"bypass"`
+}
+
+// AsModel returns the shared model fields.
+func (e ExecutorSpec) AsModel() ModelSpec {
+	return ModelSpec{Agent: e.Agent, Model: e.Model, Variant: e.Variant, ExtraArgs: e.ExtraArgs}
+}
+
+// Config is the resolved orchestrator configuration.
+type Config struct {
+	Repo string `yaml:"repo"`
+
+	Models struct {
+		Planner  ModelSpec    `yaml:"planner"`
+		Executor ExecutorSpec `yaml:"executor"`
+		Reviewer ModelSpec    `yaml:"reviewer"`
+	} `yaml:"models"`
+
+	Loop struct {
+		MaxIterations int `yaml:"max_iterations"`
+	} `yaml:"loop"`
+
+	Gates struct {
+		AfterPlan   bool `yaml:"after_plan"`
+		AfterReview bool `yaml:"after_review"`
+	} `yaml:"gates"`
+
+	Timeouts struct {
+		Planner  Duration `yaml:"planner"`
+		Executor Duration `yaml:"executor"`
+		Reviewer Duration `yaml:"reviewer"`
+	} `yaml:"timeouts"`
+
+	PlannerBudgetUSD float64 `yaml:"planner_budget_usd"`
+	ArtifactsDir     string  `yaml:"artifacts_dir"`
+
+	// Apply commits the branch and (with OpenPR) opens a PR after approval.
+	Apply  bool `yaml:"apply"`
+	OpenPR bool `yaml:"open_pr"`
+}
+
+// Default returns the built-in configuration.
+func Default() *Config {
+	c := &Config{}
+	c.Models.Planner = ModelSpec{Agent: "claude", Model: "opus"}
+	c.Models.Executor = ExecutorSpec{
+		Agent:        "codex",
+		Model:        "gpt-6-sol",
+		Sandbox:      "workspace-write",
+		ApproveForMe: true,
+	}
+	c.Models.Reviewer = ModelSpec{Agent: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Variant: "high", SubAgent: "plan"}
+	c.Loop.MaxIterations = 2
+	c.Gates.AfterPlan = true
+	c.Gates.AfterReview = true
+	c.Timeouts.Planner = Duration(15 * time.Minute)
+	c.Timeouts.Executor = Duration(45 * time.Minute)
+	c.Timeouts.Reviewer = Duration(15 * time.Minute)
+	c.PlannerBudgetUSD = 5
+	c.ArtifactsDir = DefaultArtifactsDir()
+	return c
+}
+
+// DefaultArtifactsDir returns ~/.local/state/atomic-prompt-illuminati/runs.
+func DefaultArtifactsDir() string {
+	base := os.Getenv("XDG_STATE_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return filepath.Join(os.TempDir(), "api-runs")
+		}
+		base = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(base, "atomic-prompt-illuminati", "runs")
+}
+
+// Load reads a YAML config file, merging it over defaults. A missing path is
+// not an error (defaults are returned).
+func Load(path string) (*Config, error) {
+	c := Default()
+	if path == "" {
+		return c, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return c, nil
+		}
+		return nil, err
+	}
+	if err := yaml.Unmarshal(data, c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	c.applyDefaults()
+	return c, nil
+}
+
+// Discover looks for api.yaml in repo then in the user config dir.
+func Discover(repo string) (path string) {
+	candidates := []string{}
+	if repo != "" {
+		candidates = append(candidates, filepath.Join(repo, "api.yaml"))
+	}
+	if base := os.Getenv("XDG_CONFIG_HOME"); base != "" {
+		candidates = append(candidates, filepath.Join(base, "api", "config.yaml"))
+	} else if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates, filepath.Join(home, ".config", "api", "config.yaml"))
+	}
+	for _, cand := range candidates {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
+	}
+	return ""
+}
+
+func (c *Config) applyDefaults() {
+	d := Default()
+	if c.Models.Planner.Agent == "" {
+		c.Models.Planner = d.Models.Planner
+	}
+	if c.Models.Executor.Agent == "" {
+		c.Models.Executor = d.Models.Executor
+	} else if c.Models.Executor.Sandbox == "" {
+		c.Models.Executor.Sandbox = d.Models.Executor.Sandbox
+	}
+	if c.Models.Reviewer.Agent == "" {
+		c.Models.Reviewer = d.Models.Reviewer
+	}
+	if c.Loop.MaxIterations <= 0 {
+		c.Loop.MaxIterations = d.Loop.MaxIterations
+	}
+	if c.Timeouts.Planner == 0 {
+		c.Timeouts.Planner = d.Timeouts.Planner
+	}
+	if c.Timeouts.Executor == 0 {
+		c.Timeouts.Executor = d.Timeouts.Executor
+	}
+	if c.Timeouts.Reviewer == 0 {
+		c.Timeouts.Reviewer = d.Timeouts.Reviewer
+	}
+	if c.ArtifactsDir == "" {
+		c.ArtifactsDir = d.ArtifactsDir
+	}
+}
+
+// Validate checks that the configuration is internally consistent.
+func (c *Config) Validate() error {
+	if c.Repo == "" {
+		return fmt.Errorf("repo is empty")
+	}
+	if c.Models.Planner.Model == "" || c.Models.Executor.Model == "" || c.Models.Reviewer.Model == "" {
+		return fmt.Errorf("planner/executor/reviewer models must be set")
+	}
+	switch c.Models.Executor.Sandbox {
+	case "", "read-only", "workspace-write", "danger-full-access":
+	default:
+		return fmt.Errorf("invalid executor sandbox %q", c.Models.Executor.Sandbox)
+	}
+	return nil
+}
+
+// MarshalYAML renders the resolved config for the run artifact.
+func (c *Config) MarshalYAML() ([]byte, error) { return yaml.Marshal(c) }

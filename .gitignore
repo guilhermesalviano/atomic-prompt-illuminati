@@ -1,0 +1,19 @@
+# Binaries
+/bin/
+*.exe
+*.test
+*.out
+
+# Local api config and run artifacts
+/api.yaml
+/runs/
+
+# Test / coverage output
+coverage.out
+*.cover
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

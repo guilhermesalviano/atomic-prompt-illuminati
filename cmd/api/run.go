@@ -1,0 +1,266 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+
+	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
+	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
+	"github.com/guibs/atomic-prompt-illuminati/internal/tui"
+	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+)
+
+func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
+	var (
+		yes, noTUI, allowDirty, keepWT, apply bool
+		maxIter                               int
+		plannerModel, executorModel           string
+		reviewerModel                         string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "run [prompt]",
+		Short: "plan, execute and review a prompt end to end",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			prompt, err := promptFrom(args, os.Stdin)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(prompt) == "" {
+				return errors.New("a prompt is required (argument or stdin)")
+			}
+			cfg, err := resolveConfig(*configPath, *repo, *artifactsDir)
+			if err != nil {
+				return err
+			}
+			if maxIter > 0 {
+				cfg.Loop.MaxIterations = maxIter
+			}
+			if plannerModel != "" {
+				cfg.Models.Planner.Model = plannerModel
+			}
+			if executorModel != "" {
+				cfg.Models.Executor.Model = executorModel
+			}
+			if reviewerModel != "" {
+				cfg.Models.Reviewer.Model = reviewerModel
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+			opts := pipeline.Options{
+				Repo:         cfg.Repo,
+				Prompt:       prompt,
+				AllowDirty:   allowDirty,
+				KeepWorktree: keepWT,
+				Apply:        apply,
+			}
+			if noTUI || yes || !isTTY() {
+				p := &pipeline.Pipeline{Cfg: cfg, Opts: opts}
+				return runPlain(cmd.Context(), p, yes)
+			}
+			return launchDashboard(cmd.Context(), cfg, opts, prompt, true)
+		},
+	}
+
+	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
+	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
+	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
+	cmd.Flags().BoolVar(&keepWT, "keep-worktree", false, "keep the worktree and branch even if the run fails")
+	cmd.Flags().BoolVar(&apply, "apply", false, "keep the worktree on success and mark the run applied")
+	cmd.Flags().IntVar(&maxIter, "max-iterations", 0, "override the review/fix loop iteration cap")
+	cmd.Flags().StringVar(&plannerModel, "planner-model", "", "override the planner model")
+	cmd.Flags().StringVar(&executorModel, "executor-model", "", "override the executor model")
+	cmd.Flags().StringVar(&reviewerModel, "reviewer-model", "", "override the reviewer model")
+	return cmd
+}
+
+func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
+	var (
+		yes, noTUI, keepWT bool
+	)
+	cmd := &cobra.Command{
+		Use:   "resume <run-id>",
+		Short: "resume a failed or interrupted run in its existing worktree",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			base := artifactBase(*artifactsDir)
+			run, err := artifact.LoadByID(base, args[0])
+			if err != nil {
+				return err
+			}
+			cfg, err := loadRunConfig(run, *configPath)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Stat(run.Worktree); err != nil {
+				return fmt.Errorf("worktree for %s is gone (%s); cannot resume", run.ID, run.Worktree)
+			}
+			p := &pipeline.Pipeline{
+				Cfg:  cfg,
+				Run:  run,
+				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: true},
+			}
+			_ = keepWT
+			_ = noTUI
+			return runPlain(cmd.Context(), p, yes)
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
+	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
+	cmd.Flags().BoolVar(&keepWT, "keep-worktree", true, "keep the worktree on failure")
+	return cmd
+}
+
+func newDashboardCmd(configPath, repo, artifactsDir *string) *cobra.Command {
+	var allowDirty, keepWT, apply bool
+	cmd := &cobra.Command{
+		Use:   "tui",
+		Short: "open the interactive dashboard (prompt input, worktrees, ASCII pipeline)",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runDashboardDefault(cmd, *configPath, *repo, *artifactsDir, allowDirty, keepWT, apply)
+		},
+	}
+	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "allow starting runs on a dirty repo")
+	cmd.Flags().BoolVar(&keepWT, "keep-worktree", false, "keep the worktree and branch even if a run fails")
+	cmd.Flags().BoolVar(&apply, "apply", false, "keep worktrees on success and mark runs applied")
+	return cmd
+}
+
+// runDashboardDefault is shared by the root command and `api tui`.
+func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir string, allowDirty, keepWT, apply bool) error {
+	if !isTTY() {
+		return cmd.Help()
+	}
+	cfg, err := resolveConfig(configPath, repo, artifactsDir)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	opts := pipeline.Options{Repo: cfg.Repo, AllowDirty: allowDirty, KeepWorktree: keepWT, Apply: apply}
+	return launchDashboard(cmd.Context(), cfg, opts, "", false)
+}
+
+// runPlain drives a single pipeline with the line-oriented gate.
+func runPlain(ctx context.Context, p *pipeline.Pipeline, yes bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var gate ui.Gate = ui.NewPlain(yes)
+	if yes {
+		gate = ui.AutoApprove{Inner: gate}
+	}
+	p.Gate = gate
+	defer gate.Close()
+	return p.Execute(ctx)
+}
+
+// launchDashboard opens the interactive dashboard. template supplies the per-run
+// options (Repo plus flags); every submitted prompt clones it.
+func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.Options, initialPrompt string, autoStart bool) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	app := tui.NewApp(cfg, cfg.ArtifactsDir)
+	app.SetInitialPrompt(initialPrompt, autoStart)
+	app.OnStart = func(s *tui.Session, prompt string) {
+		opts := template
+		opts.Prompt = prompt
+		if opts.Repo == "" {
+			opts.Repo = cfg.Repo
+		}
+		p := &pipeline.Pipeline{Cfg: cfg, Opts: opts, Gate: s}
+		go func() {
+			err := p.Execute(ctx)
+			s.Finish(err, p.Run)
+		}()
+	}
+
+	prog := tea.NewProgram(app, tea.WithAltScreen())
+	app.Attach(prog)
+	if _, err := prog.Run(); err != nil {
+		return err
+	}
+	return app.LastError()
+}
+
+func resolveConfig(configPath, repo, artifactsDir string) (*config.Config, error) {
+	repoAbs, err := filepath.Abs(repo)
+	if err != nil {
+		return nil, err
+	}
+	path := configPath
+	if path == "" {
+		path = config.Discover(repoAbs)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	// The --repo flag wins when set explicitly; otherwise honor the config file,
+	// falling back to the flag value (default ".") when the config has none.
+	switch {
+	case repo != "" && repo != ".":
+		cfg.Repo = repoAbs
+	case cfg.Repo == "":
+		cfg.Repo = repoAbs
+	default:
+		if abs, err := filepath.Abs(cfg.Repo); err == nil {
+			cfg.Repo = abs
+		}
+	}
+	if artifactsDir != "" {
+		cfg.ArtifactsDir = artifactsDir
+	}
+	return cfg, nil
+}
+
+func loadRunConfig(run *artifact.Run, configPath string) (*config.Config, error) {
+	if data, err := run.Read("config.resolved.yaml"); err == nil {
+		cfg := config.Default()
+		if err := yaml.Unmarshal(data, cfg); err == nil {
+			cfg.Repo = run.Repo
+			return cfg, nil
+		}
+	}
+	return resolveConfig(configPath, run.Repo, "")
+}
+
+func artifactBase(artifactsDir string) string {
+	if artifactsDir != "" {
+		return artifactsDir
+	}
+	return config.DefaultArtifactsDir()
+}
+
+func promptFrom(args []string, stdin *os.File) (string, error) {
+	if len(args) > 0 {
+		return strings.Join(args, " "), nil
+	}
+	if isTTY() {
+		return "", nil
+	}
+	data, err := io.ReadAll(stdin)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
+func isTTY() bool {
+	return term.IsTerminal(os.Stdin.Fd()) && term.IsTerminal(os.Stdout.Fd())
+}
