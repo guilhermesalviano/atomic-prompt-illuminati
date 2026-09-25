@@ -24,6 +24,7 @@ const (
 	StateExecuting  State = "executing"
 	StateReviewing  State = "reviewing"
 	StateGateReview State = "gate_review"
+	StatePublishing State = "publishing"
 	StateCommitting State = "committing"
 	StateDone       State = "done"
 	StateFailed     State = "failed"
@@ -55,6 +56,7 @@ type Run struct {
 	State     State     `json:"state"`
 	Iteration int       `json:"iteration"`
 	Commit    string    `json:"commit,omitempty"`
+	Pushed    bool      `json:"pushed,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	Usage     Usage     `json:"usage"`
 	CreatedAt time.Time `json:"created_at"`

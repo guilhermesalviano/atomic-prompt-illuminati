@@ -36,6 +36,15 @@ const (
 
 var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff"}
 
+// inputField selects which footer field receives typing while the input is
+// focused. The worktree name is required, so it comes first.
+type inputField int
+
+const (
+	fieldName inputField = iota
+	fieldPrompt
+)
+
 const maxLogs = 1000
 
 // App is the dashboard model. It implements tea.Model and owns the sessions
@@ -43,7 +52,7 @@ const maxLogs = 1000
 type App struct {
 	// OnStart is called when the user submits a prompt. Implementations should
 	// run the pipeline and call Session.Finish when done.
-	OnStart func(s *Session, prompt string)
+	OnStart func(s *Session, name, prompt string)
 
 	cfg     *config.Config
 	entries []*Entry
@@ -51,7 +60,9 @@ type App struct {
 	listTop int
 
 	input      []rune
+	inputName  []rune
 	inputFocus bool
+	field      inputField
 
 	tab     tab
 	scroll  int  // content offset from the top
@@ -70,11 +81,12 @@ type App struct {
 	asideH      int
 	asideCache  contentCache
 
-	width   int
-	height  int
-	frame   int
-	initial string
-	autoRun bool
+	width       int
+	height      int
+	frame       int
+	initial     string
+	initialName string
+	autoRun     bool
 
 	mu      sync.Mutex
 	lastErr error
@@ -102,10 +114,11 @@ func NewApp(cfg *config.Config, baseDir string) *App {
 // Attach connects the app to its running program.
 func (a *App) Attach(p *tea.Program) { a.prog = p }
 
-// SetInitialPrompt pre-fills the input; when auto is true the run starts
+// SetInitial pre-fills the name and prompt; when auto is true the run starts
 // immediately after the program starts.
-func (a *App) SetInitialPrompt(prompt string, auto bool) {
+func (a *App) SetInitial(prompt, name string, auto bool) {
 	a.initial = prompt
+	a.initialName = name
 	a.autoRun = auto
 }
 
@@ -157,6 +170,23 @@ func (s *Session) PlanGate(ctx context.Context, plan *contracts.Plan, diff strin
 
 func (s *Session) ReviewGate(ctx context.Context, review *contracts.Review, diff string) (ui.Decision, error) {
 	return s.gate(ctx, &gateReq{kind: gateReview, review: review, diff: diff})
+}
+
+// CommitGate asks whether to commit and/or push the staged changes.
+func (s *Session) CommitGate(ctx context.Context, branch, worktree string) (ui.CommitDecision, error) {
+	req := &gateReq{
+		kind:        gateCommit,
+		branch:      branch,
+		worktree:    worktree,
+		commitReply: make(chan ui.CommitDecision, 1),
+	}
+	s.app.send(gateEventMsg{entry: s.entry, req: req})
+	select {
+	case d := <-req.commitReply:
+		return d, nil
+	case <-ctx.Done():
+		return ui.CommitStop, ctx.Err()
+	}
 }
 
 func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
@@ -216,6 +246,7 @@ type Entry struct {
 	ID      string
 	Prompt  string
 	Repo    string
+	Name    string
 	Live    bool
 	Run     *artifact.Run
 	State   artifact.State
@@ -259,6 +290,7 @@ func entryFromRun(r *artifact.Run) *Entry {
 		ID:      r.ID,
 		Prompt:  r.Prompt,
 		Repo:    r.Repo,
+		Name:    r.Branch,
 		Run:     r,
 		State:   r.State,
 		Iter:    r.Iteration,
@@ -289,7 +321,7 @@ func (e *Entry) hydrate() {
 		done(agent.Planner)
 		done(agent.Executor)
 		e.Stages[agent.Reviewer].status = fmt.Sprintf("reviewing (iter %d)", e.Iter)
-	case artifact.StateCommitting, artifact.StateDone:
+	case artifact.StateCommitting, artifact.StatePublishing, artifact.StateDone:
 		for _, k := range stageOrder {
 			done(k)
 		}
@@ -416,6 +448,7 @@ type gateKind int
 const (
 	gatePlan gateKind = iota
 	gateReview
+	gateCommit
 	gateAgent
 )
 
@@ -425,6 +458,11 @@ type gateReq struct {
 	review *contracts.Review
 	diff   string
 	reply  chan ui.Decision
+
+	// gateCommit fields: publishing staged changes after a passed review.
+	branch      string
+	worktree    string
+	commitReply chan ui.CommitDecision
 
 	// gateAgent fields: choosing a replacement adapter after a stage failed.
 	agentKind  agent.Kind
@@ -500,10 +538,12 @@ func tick() tea.Cmd {
 func (a *App) Init() tea.Cmd {
 	cmds := []tea.Cmd{tick()}
 	if a.initial != "" && a.autoRun {
-		cmds = append(cmds, a.startRun(a.initial))
+		cmds = append(cmds, a.startRun(a.initialName, a.initial))
 	} else {
 		a.input = []rune(a.initial)
+		a.inputName = []rune(a.initialName)
 		a.inputFocus = true
+		a.field = fieldName
 	}
 	return tea.Batch(cmds...)
 }
@@ -577,6 +617,8 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.setTab(tabPlan)
 			case gateReview:
 				a.setTab(tabReview)
+			case gateCommit:
+				a.setTab(tabDiff)
 			}
 		}
 
@@ -620,40 +662,53 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if a.inputFocus {
 		switch msg.Type {
-		case tea.KeyEsc, tea.KeyTab:
+		case tea.KeyEsc:
 			a.inputFocus = false
+		case tea.KeyTab:
+			if a.field == fieldName {
+				if strings.TrimSpace(string(a.inputName)) != "" {
+					a.field = fieldPrompt
+				}
+			} else {
+				a.field = fieldName
+			}
 		case tea.KeyCtrlC:
 			return a.quit()
 		case tea.KeyEnter:
+			if a.field == fieldName {
+				if strings.TrimSpace(string(a.inputName)) != "" {
+					a.field = fieldPrompt
+				}
+				return a, nil
+			}
+			name := strings.TrimSpace(string(a.inputName))
 			prompt := strings.TrimSpace(string(a.input))
-			a.input = nil
+			a.input, a.inputName = nil, nil
 			a.inputFocus = false
-			if prompt != "" {
-				return a, a.startRun(prompt)
+			if name != "" && prompt != "" {
+				return a, a.startRun(name, prompt)
 			}
 		case tea.KeyBackspace:
-			if len(a.input) > 0 {
-				a.input = a.input[:len(a.input)-1]
-			}
+			a.deleteChar()
 		case tea.KeyCtrlU:
-			a.input = nil
+			a.clearField()
 		case tea.KeyCtrlW:
-			s := strings.TrimRight(string(a.input), " ")
-			if i := strings.LastIndexByte(s, ' '); i >= 0 {
-				a.input = []rune(s[:i+1])
-			} else {
-				a.input = nil
-			}
+			a.deleteWord()
 		case tea.KeySpace:
-			a.input = append(a.input, ' ')
+			a.typeRunes(" ")
 		case tea.KeyRunes:
-			a.input = append(a.input, msg.Runes...)
+			a.typeRunes(string(msg.Runes))
 		}
 		return a, nil
 	}
 
-	if e := a.current(); e != nil && e.Gate != nil && e.Gate.kind == gateAgent {
-		return a.handleAgentKey(e.Gate, msg)
+	if e := a.current(); e != nil && e.Gate != nil {
+		switch e.Gate.kind {
+		case gateAgent:
+			return a.handleAgentKey(e.Gate, msg)
+		case gateCommit:
+			return a.handleCommitKey(e.Gate, msg)
+		}
 	}
 
 	switch msg.String() {
@@ -661,6 +716,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a.quit()
 	case "n", "/", "i":
 		a.inputFocus = true
+		a.field = fieldName
 	case "up", "k":
 		a.move(-1)
 	case "down", "j":
@@ -699,6 +755,54 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// typeRunes appends text to the focused input field.
+func (a *App) typeRunes(s string) {
+	if a.field == fieldName {
+		a.inputName = append(a.inputName, []rune(s)...)
+		return
+	}
+	a.input = append(a.input, []rune(s)...)
+}
+
+// deleteChar removes the last rune of the focused field.
+func (a *App) deleteChar() {
+	if a.field == fieldName {
+		if len(a.inputName) > 0 {
+			a.inputName = a.inputName[:len(a.inputName)-1]
+		}
+		return
+	}
+	if len(a.input) > 0 {
+		a.input = a.input[:len(a.input)-1]
+	}
+}
+
+// clearField empties the focused field.
+func (a *App) clearField() {
+	if a.field == fieldName {
+		a.inputName = nil
+		return
+	}
+	a.input = nil
+}
+
+// deleteWord removes the last word of the focused field.
+func (a *App) deleteWord() {
+	if a.field == fieldName {
+		a.inputName = []rune(dropLastWord(string(a.inputName)))
+		return
+	}
+	a.input = []rune(dropLastWord(string(a.input)))
+}
+
+func dropLastWord(s string) string {
+	s = strings.TrimRight(s, " ")
+	if i := strings.LastIndexByte(s, ' '); i >= 0 {
+		return s[:i+1]
+	}
+	return ""
+}
+
 // quit exits immediately when nothing is running; otherwise it asks first,
 // because quitting cancels every in-flight run.
 func (a *App) quit() (tea.Model, tea.Cmd) {
@@ -720,8 +824,9 @@ func (a *App) liveCount() int {
 }
 
 // startRun appends a live entry and asks the host to run the pipeline.
-func (a *App) startRun(prompt string) tea.Cmd {
+func (a *App) startRun(name, prompt string) tea.Cmd {
 	e := newEntry(prompt, a.cfg.Repo)
+	e.Name = strings.TrimSpace(name)
 	s := &Session{entry: e, app: a}
 	e.Session = s
 	a.entries = append([]*Entry{e}, a.entries...)
@@ -729,7 +834,7 @@ func (a *App) startRun(prompt string) tea.Cmd {
 	a.setTab(tabActivity)
 	return func() tea.Msg {
 		if a.OnStart != nil {
-			a.OnStart(s, prompt)
+			a.OnStart(s, e.Name, prompt)
 		}
 		return nil
 	}
@@ -802,6 +907,32 @@ func (a *App) handleAgentKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// handleCommitKey drives the publish gate shown after a passed review.
+func (a *App) handleCommitKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return a.quit()
+	case "c", "enter":
+		a.answerCommit(ui.CommitOnly)
+	case "p":
+		a.answerCommit(ui.CommitAndPush)
+	case "s", "esc":
+		a.answerCommit(ui.CommitStop)
+	}
+	return a, nil
+}
+
+// answerCommit resolves a pending publish gate.
+func (a *App) answerCommit(d ui.CommitDecision) {
+	e := a.current()
+	if e == nil || e.Gate == nil || e.Gate.kind != gateCommit || e.Gate.commitReply == nil {
+		return
+	}
+	e.Gate.commitReply <- d
+	e.Gate = nil
+	e.touch()
+}
+
 // answerAgent resolves a pending adapter-selection prompt. An empty name aborts.
 func (a *App) answerAgent(name string) {
 	e := a.current()
@@ -835,7 +966,7 @@ func (a *App) answer(d ui.Decision) {
 // be approved or rejected; a failed review can only be fixed or rejected.
 func gateAllows(g *gateReq, d ui.Decision) bool {
 	switch g.kind {
-	case gateAgent:
+	case gateAgent, gateCommit:
 		return false
 	case gatePlan:
 		return d != ui.Fix

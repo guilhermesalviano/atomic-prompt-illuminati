@@ -27,6 +27,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	var (
 		yes, noTUI, allowDirty, keepWT, apply bool
 		maxIter                               int
+		name                                  string
 		plannerModel, executorModel           string
 		reviewerModel                         string
 	)
@@ -65,6 +66,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 			opts := pipeline.Options{
 				Repo:         cfg.Repo,
 				Prompt:       prompt,
+				Name:         name,
 				AllowDirty:   allowDirty,
 				KeepWorktree: keepWT,
 				Apply:        apply,
@@ -73,10 +75,11 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 				p := &pipeline.Pipeline{Cfg: cfg, Opts: opts}
 				return runPlain(cmd.Context(), p, yes)
 			}
-			return launchDashboard(cmd.Context(), cfg, opts, prompt, true)
+			return launchDashboard(cmd.Context(), cfg, opts, prompt, name, true)
 		},
 	}
 
+	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (required)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
@@ -86,6 +89,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	cmd.Flags().StringVar(&plannerModel, "planner-model", "", "override the planner model")
 	cmd.Flags().StringVar(&executorModel, "executor-model", "", "override the executor model")
 	cmd.Flags().StringVar(&reviewerModel, "reviewer-model", "", "override the reviewer model")
+	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 
@@ -149,7 +153,7 @@ func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir stri
 		return err
 	}
 	opts := pipeline.Options{Repo: cfg.Repo, AllowDirty: allowDirty, KeepWorktree: keepWT, Apply: apply}
-	return launchDashboard(cmd.Context(), cfg, opts, "", false)
+	return launchDashboard(cmd.Context(), cfg, opts, "", "", false)
 }
 
 // runPlain drives a single pipeline with the line-oriented gate.
@@ -167,8 +171,9 @@ func runPlain(ctx context.Context, p *pipeline.Pipeline, yes bool) error {
 }
 
 // launchDashboard opens the interactive dashboard. template supplies the per-run
-// options (Repo plus flags); every submitted prompt clones it.
-func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.Options, initialPrompt string, autoStart bool) error {
+// options (Repo plus flags); every submitted prompt clones it. initialName backs
+// the auto-started run when autoStart is set.
+func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.Options, initialPrompt, initialName string, autoStart bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -183,8 +188,8 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 	)
 
 	app := tui.NewApp(cfg, cfg.ArtifactsDir)
-	app.SetInitialPrompt(initialPrompt, autoStart)
-	app.OnStart = func(s *tui.Session, prompt string) {
+	app.SetInitial(initialPrompt, initialName, autoStart)
+	app.OnStart = func(s *tui.Session, name, prompt string) {
 		mu.Lock()
 		if closed {
 			mu.Unlock()
@@ -195,6 +200,9 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 
 		opts := template
 		opts.Prompt = prompt
+		if name != "" {
+			opts.Name = name
+		}
 		if opts.Repo == "" {
 			opts.Repo = cfg.Repo
 		}

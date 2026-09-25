@@ -74,6 +74,38 @@ func (p *Plain) ReviewGate(_ context.Context, review *contracts.Review, diff str
 	return p.ask("Review failed. [f]ix/[r]eject: ", map[string]Decision{"f": Fix, "": Fix, "r": Reject, "a": Approve})
 }
 
+func (p *Plain) CommitGate(_ context.Context, branch, worktree string) (CommitDecision, error) {
+	fmt.Fprintf(p.out, "\n=== PUBLISH ===\nChanges staged on %s (%s)\n", branch, worktree)
+	if p.autoApprove {
+		fmt.Fprintln(p.out, "[--yes] committing staged changes (no push)")
+		return CommitOnly, nil
+	}
+	return p.askCommit()
+}
+
+func (p *Plain) askCommit() (CommitDecision, error) {
+	opts := map[string]CommitDecision{
+		"c": CommitOnly, "": CommitOnly,
+		"p": CommitAndPush,
+		"s": CommitStop,
+	}
+	for {
+		fmt.Fprint(p.out, "Publish staged changes? [c]ommit/[p]ush/[s]kip: ")
+		line, err := p.in.ReadString('\n')
+		if err != nil && line == "" {
+			if err == io.EOF {
+				return CommitStop, nil
+			}
+			return CommitStop, err
+		}
+		key := strings.ToLower(strings.TrimSpace(line))
+		if d, ok := opts[key]; ok {
+			return d, nil
+		}
+		fmt.Fprintln(p.out, "unrecognized input")
+	}
+}
+
 func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
 	fmt.Fprintf(p.out, "\n=== AGENT FAILURE (%s) ===\n", kind)
 	fmt.Fprintf(p.out, "agent %q could not run: %v\n", failed, cause)

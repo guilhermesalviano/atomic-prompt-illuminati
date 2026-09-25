@@ -4,6 +4,7 @@ package worktree
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -56,6 +57,25 @@ func Add(repo, path, branch, base string) error {
 	}
 	_, err := git(repo, "worktree", "add", "-b", branch, path, base)
 	return err
+}
+
+// ValidBranch reports whether name can be used as a new branch name. An empty
+// name is rejected because the worktree name is required to start a run.
+func ValidBranch(repo, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("a worktree name is required")
+	}
+	if _, err := git(repo, "check-ref-format", "--branch", name); err != nil {
+		return fmt.Errorf("invalid worktree name %q", name)
+	}
+	return nil
+}
+
+// BranchExists reports whether a local branch already exists.
+func BranchExists(repo, branch string) bool {
+	_, err := git(repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
 }
 
 // Remove deletes a worktree, force-removing it if needed.
@@ -130,6 +150,18 @@ func Snapshot(worktree string) (string, error) {
 		b.WriteString(d)
 	}
 	return b.String(), nil
+}
+
+// Stage adds every change in the worktree to the index without committing.
+func Stage(worktree string) error {
+	_, err := git(worktree, "add", "-A")
+	return err
+}
+
+// Push publishes branch to origin and sets its upstream.
+func Push(worktree, branch string) error {
+	_, err := git(worktree, "push", "-u", "origin", branch)
+	return err
 }
 
 // Commit stages everything and creates a commit, returning the new SHA. It is a

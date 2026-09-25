@@ -300,8 +300,12 @@ func (a *App) renderMain(w, h int) string {
 
 func (a *App) metaLine(e *Entry, w int) string {
 	var parts []string
+	branch := e.Name
 	if e.Run != nil && e.Run.Branch != "" {
-		parts = append(parts, violetStyle.Render("⎇ "+e.Run.Branch))
+		branch = e.Run.Branch
+	}
+	if branch != "" {
+		parts = append(parts, violetStyle.Render("⎇ "+branch))
 	}
 	if e.Iter > 0 {
 		parts = append(parts, amberStyle.Render(fmt.Sprintf("iter %d", e.Iter)))
@@ -494,6 +498,9 @@ func (a *App) renderGate(e *Entry, w int) []string {
 	case gatePlan:
 		title = "PLAN READY — approve to start the executor"
 		chips = []string{chip("a", "approve", cGreen), chip("r", "reject", cRed)}
+	case gateCommit:
+		title = "CHANGES STAGED — commit or push " + e.Gate.branch
+		chips = []string{chip("c", "commit", cGreen), chip("p", "commit + push", cCyan), chip("s", "skip", cMuted)}
 	case gateReview:
 		if e.Gate.review != nil && e.Gate.review.Pass() {
 			title = "REVIEW PASSED — approve to commit the branch"
@@ -656,37 +663,27 @@ func (a *App) renderFooter(w int) string {
 	if a.inputFocus {
 		border = cGold
 	}
-	caret := goldStyle.Bold(true).Render("❯ ")
 	avail := w - 8
-	var body string
-	switch {
-	case len(a.input) == 0 && a.inputFocus:
-		body = lipgloss.NewStyle().Reverse(true).Render(" ") +
-			mutedStyle.Render(" describe the change you want…")
-	case len(a.input) == 0:
-		body = mutedStyle.Render("press n to write a prompt")
-	default:
-		text := tail(string(a.input), avail)
-		if a.inputFocus {
-			body = textStyle.Render(text) + lipgloss.NewStyle().Reverse(true).Render(" ")
-		} else {
-			body = mutedStyle.Render(text)
-		}
-	}
+	nameActive := a.inputFocus && a.field == fieldName
+	promptActive := a.inputFocus && a.field == fieldPrompt
+	body := inputLine("name", string(a.inputName), nameActive, "worktree name (required)", avail) + "\n" +
+		inputLine("prompt", string(a.input), promptActive, "describe the change you want…", avail)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
-		Padding(0, 1).Width(w - 2).Render(caret + body)
+		Padding(0, 1).Width(w - 2).Render(body)
 
 	var hints []string
 	e := a.current()
 	switch {
 	case a.inputFocus:
-		hints = []string{keyHint("enter", "run"), keyHint("esc", "back"), keyHint("ctrl+u", "clear"), keyHint("ctrl+w", "delete word")}
+		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("ctrl+u", "clear"), keyHint("esc", "back")}
 	case e != nil && e.Gate != nil:
 		switch {
 		case e.Gate.kind == gateAgent:
 			hints = []string{keyHint("↑↓", "choose"), keyHint("enter", "use"), keyHint("esc", "abort")}
 		case e.Gate.kind == gatePlan:
 			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
+		case e.Gate.kind == gateCommit:
+			hints = []string{keyHint("c", "commit"), keyHint("p", "commit + push"), keyHint("s", "skip")}
 		case e.Gate.review != nil && e.Gate.review.Pass():
 			hints = []string{keyHint("a", "approve"), keyHint("f", "fix"), keyHint("r", "reject")}
 		default:
@@ -712,6 +709,37 @@ func (a *App) diffHint() string {
 }
 
 // --- layout helpers ---------------------------------------------------------
+
+// inputLine renders one labeled field of the footer input.
+func inputLine(label, val string, active bool, placeholder string, avail int) string {
+	mark := "  "
+	labelSt := faintStyle.Render(label + ":")
+	if active {
+		mark = goldStyle.Bold(true).Render("❯ ")
+		labelSt = goldStyle.Render(label + ":")
+	}
+	prefix := mark + labelSt + " "
+	inner := avail - lipgloss.Width(mark) - lipgloss.Width(label) - 2
+	if inner < 4 {
+		inner = 4
+	}
+	var content string
+	switch {
+	case val == "" && active:
+		content = lipgloss.NewStyle().Reverse(true).Render(" ") +
+			mutedStyle.Render(" "+tail(placeholder, max(0, inner-2)))
+	case val == "":
+		content = mutedStyle.Render(tail(placeholder, inner))
+	default:
+		text := tail(val, inner)
+		if active {
+			content = textStyle.Render(text) + lipgloss.NewStyle().Reverse(true).Render(" ")
+		} else {
+			content = mutedStyle.Render(text)
+		}
+	}
+	return truncate(prefix+content, avail)
+}
 
 // panel draws a rounded box of exactly w×h cells with the title set into the
 // top border.

@@ -46,6 +46,9 @@ func (g *recordingGate) ReviewGate(context.Context, *contracts.Review, string) (
 	g.reviewGates++
 	return ui.Approve, nil
 }
+func (g *recordingGate) CommitGate(context.Context, string, string) (ui.CommitDecision, error) {
+	return ui.CommitOnly, nil
+}
 func (g *recordingGate) SelectAgent(context.Context, agent.Kind, string, []string, string, error) (string, error) {
 	return "", nil
 }
@@ -119,12 +122,15 @@ func TestExecuteHappyPath(t *testing.T) {
 		return nil, nil
 	}
 
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: gate, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if p.Run.State != artifact.StateDone {
 		t.Fatalf("state = %s, want done", p.Run.State)
+	}
+	if p.Run.Branch != "test-run" {
+		t.Fatalf("branch = %q, want the worktree name", p.Run.Branch)
 	}
 	if p.Run.Commit == "" {
 		t.Fatal("expected a commit")
@@ -182,7 +188,7 @@ func TestExecuteFixLoopThenPass(t *testing.T) {
 		return nil, nil
 	}
 
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: gate, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -233,7 +239,7 @@ func TestExecutorFallsBackOnFailure(t *testing.T) {
 		return nil, nil
 	}
 
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: gate, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -242,6 +248,22 @@ func TestExecutorFallsBackOnFailure(t *testing.T) {
 	}
 	if p.Run.State != artifact.StateDone {
 		t.Fatalf("state = %s, want done", p.Run.State)
+	}
+}
+
+func TestMissingWorktreeNameIsRejected(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	gate := &recordingGate{}
+	factory := func(name string) (agent.Agent, error) {
+		return fakeAgent{name, agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+			return &agent.Result{Structured: planJSON(t)}, nil
+		}}, nil
+	}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	err := p.Execute(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "worktree name is required") {
+		t.Fatalf("err = %v, want missing worktree name", err)
 	}
 }
 
@@ -259,7 +281,7 @@ func TestRejectedPlanStaysAborted(t *testing.T) {
 			return &agent.Result{Structured: planJSON(t)}, nil
 		}}, nil
 	}
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: &rejectPlanGate{}, AgentFactory: factory}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: &rejectPlanGate{}, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err == nil {
 		t.Fatal("expected rejection error")
 	}

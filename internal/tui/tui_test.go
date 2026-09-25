@@ -137,14 +137,14 @@ func TestEntryFromRunLoadsArtifacts(t *testing.T) {
 func TestStartRunPrependsEntry(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
 	a.width, a.height = 100, 30
-	cmd := a.startRun("first")
+	cmd := a.startRun("wt", "first")
 	if len(a.entries) != 1 || a.cursor != 0 {
 		t.Fatalf("entry not added: %d", len(a.entries))
 	}
 	if cmd == nil {
 		t.Fatal("expected startup command")
 	}
-	a.startRun("second")
+	a.startRun("wt2", "second")
 	if len(a.entries) != 2 || !strings.HasPrefix(a.entries[0].Prompt, "second") {
 		t.Fatalf("newest entry not first: %+v", a.entries)
 	}
@@ -190,6 +190,23 @@ func TestGateIgnoresKeysItDoesNotOffer(t *testing.T) {
 	a.answer(ui.Fix)
 	if e.Gate == nil {
 		t.Fatal("fix must not resolve a plan gate")
+	}
+}
+
+func TestCommitGateChoices(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("x", "/repo")
+	a.entries = []*Entry{e}
+
+	req := &gateReq{kind: gateCommit, branch: "my-branch", commitReply: make(chan ui.CommitDecision, 1)}
+	e.Gate = req
+	a.answer(ui.Approve)
+	if e.Gate == nil {
+		t.Fatal("approve must not resolve a commit gate")
+	}
+	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	if e.Gate != nil || <-req.commitReply != ui.CommitAndPush {
+		t.Fatal("p should resolve the commit gate with commit+push")
 	}
 }
 

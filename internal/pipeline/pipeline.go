@@ -19,8 +19,12 @@ import (
 
 // Options controls a single pipeline run.
 type Options struct {
-	Repo         string
-	Prompt       string
+	Repo   string
+	Prompt string
+	// Name is the required worktree/branch name for a new run. The branch is
+	// created with this name verbatim. It is ignored when resuming a run, whose
+	// branch is already recorded.
+	Name         string
 	AllowDirty   bool
 	KeepWorktree bool
 	// Apply leaves the worktree in place and, when the remote supports it, is
@@ -96,10 +100,19 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		created = true
 	}
 	p.Run = run
+	if created {
+		if err := worktree.ValidBranch(p.Opts.Repo, p.Opts.Name); err != nil {
+			return err
+		}
+	}
 	p.branch = run.Branch
 	p.worktreePath = run.Worktree
 	if p.branch == "" {
-		p.branch = "api/" + run.ID
+		if name := strings.TrimSpace(p.Opts.Name); name != "" {
+			p.branch = name
+		} else {
+			p.branch = "api/" + run.ID
+		}
 	}
 	if p.worktreePath == "" {
 		p.worktreePath = run.Path("worktree")
@@ -130,6 +143,9 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}()
 
 	if created {
+		if worktree.BranchExists(p.Opts.Repo, p.branch) {
+			return fmt.Errorf("branch %q already exists; choose another worktree name", p.branch)
+		}
 		base, err := worktree.Head(p.Opts.Repo)
 		if err != nil {
 			return err
@@ -186,6 +202,26 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 
 	// --- FINALIZE ---------------------------------------------------------
+	// The review passed: stage every change so the worktree is ready to
+	// publish, then let the user decide whether to commit and/or push.
+	if err := worktree.Stage(p.worktreePath); err != nil {
+		return err
+	}
+	if err := run.SetState(artifact.StatePublishing); err != nil {
+		return err
+	}
+	decision, err := p.Gate.CommitGate(ctx, p.branch, p.worktreePath)
+	if err != nil {
+		return err
+	}
+	if decision == ui.CommitStop {
+		p.Gate.Info("changes staged on " + p.branch + "; not committed")
+		if err := run.SetState(artifact.StateDone); err != nil {
+			return err
+		}
+		p.Gate.Info("worktree retained at " + p.worktreePath)
+		return nil
+	}
 	if err := run.SetState(artifact.StateCommitting); err != nil {
 		return err
 	}
@@ -194,6 +230,17 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		return err
 	}
 	run.Commit = commit
+	if decision == ui.CommitAndPush {
+		// A failed push must not be treated as a failed run: that would tear
+		// down the worktree and discard the commit that just succeeded.
+		if err := worktree.Push(p.worktreePath, p.branch); err != nil {
+			p.Gate.Info("warning: push failed: " + err.Error())
+			p.Gate.Info("commit is safe on " + p.branch + "; push it manually")
+		} else {
+			run.Pushed = true
+			p.Gate.Info("pushed " + p.branch + " to origin")
+		}
+	}
 	if err := run.SetState(artifact.StateDone); err != nil {
 		return err
 	}
