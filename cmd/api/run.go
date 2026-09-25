@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/term"
@@ -88,9 +90,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 }
 
 func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
-	var (
-		yes, noTUI, keepWT bool
-	)
+	var yes, keepWT bool
 	cmd := &cobra.Command{
 		Use:   "resume <run-id>",
 		Short: "resume a failed or interrupted run in its existing worktree",
@@ -111,15 +111,12 @@ func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
 			p := &pipeline.Pipeline{
 				Cfg:  cfg,
 				Run:  run,
-				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: true},
+				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: keepWT},
 			}
-			_ = keepWT
-			_ = noTUI
 			return runPlain(cmd.Context(), p, yes)
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
-	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&keepWT, "keep-worktree", true, "keep the worktree on failure")
 	return cmd
 }
@@ -175,9 +172,27 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Runs get their own context so quitting the dashboard cancels them: agents
+	// run in their own process groups and would otherwise outlive us.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		closed bool
+	)
+
 	app := tui.NewApp(cfg, cfg.ArtifactsDir)
 	app.SetInitialPrompt(initialPrompt, autoStart)
 	app.OnStart = func(s *tui.Session, prompt string) {
+		mu.Lock()
+		if closed {
+			mu.Unlock()
+			return
+		}
+		wg.Add(1)
+		mu.Unlock()
+
 		opts := template
 		opts.Prompt = prompt
 		if opts.Repo == "" {
@@ -185,17 +200,41 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 		}
 		p := &pipeline.Pipeline{Cfg: cfg, Opts: opts, Gate: s}
 		go func() {
-			err := p.Execute(ctx)
+			defer wg.Done()
+			err := p.Execute(runCtx)
 			s.Finish(err, p.Run)
 		}()
 	}
 
 	prog := tea.NewProgram(app, tea.WithAltScreen())
 	app.Attach(prog)
-	if _, err := prog.Run(); err != nil {
+	_, runErr := prog.Run()
+
+	mu.Lock()
+	closed = true
+	mu.Unlock()
+	cancel()
+	if !waitTimeout(&wg, 15*time.Second) {
+		fmt.Fprintln(os.Stderr, "api: timed out waiting for in-flight runs to stop")
+	}
+	if runErr != nil {
+		return runErr
+	}
+	if err := app.LastError(); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
-	return app.LastError()
+	return nil
+}
+
+func waitTimeout(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 func resolveConfig(configPath, repo, artifactsDir string) (*config.Config, error) {

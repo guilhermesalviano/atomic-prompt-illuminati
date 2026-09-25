@@ -22,25 +22,50 @@ type Check struct {
 	Detail string
 }
 
-// Checks runs all preflight assertions for the given repo.
-func Checks(repo string) []Check {
-	checks := []Check{
-		versionCheck("claude", "--version", true),
-		versionCheck("codex", "--version", true),
-		versionCheck("opencode", "--version", true),
-		gitRepoCheck(repo),
-		authCheck("claude", []string{
-			filepath.Join(home(), ".claude", ".credentials.json"),
-			filepath.Join(home(), ".claude.json"),
-		}, "ANTHROPIC_API_KEY"),
-		authCheck("codex", []string{
-			filepath.Join(home(), ".codex", "auth.json"),
-		}, "OPENAI_API_KEY"),
-		authCheck("opencode", []string{
-			filepath.Join(home(), ".local", "share", "opencode", "auth.json"),
-		}, ""),
+// Checks runs the preflight assertions for the given repo and agent CLIs. With
+// no agents it checks every supported CLI.
+func Checks(repo string, agents ...string) []Check {
+	want := map[string]bool{}
+	for _, a := range agents {
+		a = strings.ToLower(strings.TrimSpace(a))
+		if a == "" {
+			a = "opencode" // matches the pipeline's adapter default
+		}
+		want[a] = true
+	}
+	all := len(want) == 0
+	bins := []string{"claude", "codex", "opencode"}
+
+	var checks []Check
+	for _, b := range bins {
+		if all || want[b] {
+			checks = append(checks, versionCheck(b, "--version", true))
+		}
+	}
+	checks = append(checks, gitRepoCheck(repo))
+	for _, b := range bins {
+		if all || want[b] {
+			checks = append(checks, authChecks[b]())
+		}
 	}
 	return checks
+}
+
+var authChecks = map[string]func() Check{
+	"claude": func() Check {
+		return authCheck("claude", []string{
+			filepath.Join(home(), ".claude", ".credentials.json"),
+			filepath.Join(home(), ".claude.json"),
+		}, "ANTHROPIC_API_KEY")
+	},
+	"codex": func() Check {
+		return authCheck("codex", []string{filepath.Join(home(), ".codex", "auth.json")}, "OPENAI_API_KEY")
+	},
+	"opencode": func() Check {
+		return authCheck("opencode", []string{
+			filepath.Join(home(), ".local", "share", "opencode", "auth.json"),
+		}, "")
+	},
 }
 
 // Fatal returns the first fatal failure as an error, or nil.

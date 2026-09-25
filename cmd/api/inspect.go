@@ -140,7 +140,8 @@ func newDoctorCmd(configPath, repo *string) *cobra.Command {
 			fmt.Fprintf(out, "executor:  %s (%s, sandbox=%s)\n", cfg.Models.Executor.Model, cfg.Models.Executor.Agent, cfg.Models.Executor.Sandbox)
 			fmt.Fprintf(out, "reviewer:  %s (%s)\n\n", cfg.Models.Reviewer.Model, cfg.Models.Reviewer.Agent)
 
-			checks := preflight.Checks(cfg.Repo)
+			checks := preflight.Checks(cfg.Repo,
+				cfg.Models.Planner.Agent, cfg.Models.Executor.Agent, cfg.Models.Reviewer.Agent)
 			w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(w, "STATUS\tCHECK\tDETAIL")
 			for _, c := range checks {

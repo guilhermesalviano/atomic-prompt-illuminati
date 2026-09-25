@@ -2,200 +2,389 @@ package tui
 
 import (
 	"fmt"
-	"strconv"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
 )
 
-var (
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
-	listTitle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("99"))
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	promptStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	gateStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("214"))
-	okStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	failStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	runStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	boxStyle      = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240")).
-			Align(lipgloss.Center)
-	boxActive = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("39")).
-			Align(lipgloss.Center)
-	boxDone = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("42")).
-		Align(lipgloss.Center)
-	boxFail = lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("196")).
-		Align(lipgloss.Center)
+const (
+	arrowW     = 5  // width of the connector between stage cards
+	minCardW   = 16 // below this the pipeline is drawn vertically
+	entryLines = 3  // rows per run in the sidebar (two lines plus a gap)
 )
-
-var spin = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"}
-
-const arrow = " ──▶ "
 
 // View implements tea.Model.
 func (a *App) View() string {
-	w, h := a.width, a.height
-	if w < 60 {
-		w = 60
-	}
-	if h < 12 {
-		h = 12
-	}
-	leftW := 32
-	rightW := w - leftW - 1
-	if rightW < 34 {
-		rightW = 34
-	}
-	bodyH := h - 3
+	w, h := max(a.width, 60), max(a.height, 16)
 
-	left := a.renderList(leftW, bodyH)
-	right := a.renderRight(rightW, bodyH)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
-	return body + "\n" + a.renderInput(w)
+	header := a.renderHeader(w)
+	footer := a.renderFooter(w)
+	bodyH := max(h-lipgloss.Height(header)-lipgloss.Height(footer), 8)
+
+	sideW := min(max(w*3/10, 28), 44)
+	mainW := w - sideW
+	body := lipgloss.JoinHorizontal(lipgloss.Top,
+		a.renderSidebar(sideW, bodyH),
+		a.renderMain(mainW, bodyH))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-func (a *App) renderList(w, h int) string {
-	lines := []string{listTitle.Render("WORKTREES")}
-	if len(a.entries) == 0 {
-		lines = append(lines, dimStyle.Render("(none yet)"), "",
-			dimStyle.Render("type a prompt below"), dimStyle.Render("and press enter"))
-		return clipLines(strings.Join(lines, "\n"), w, h)
-	}
-	for i, e := range a.entries {
-		glyph, _ := e.stateLabel()
-		name := truncate(e.title(), w-5)
-		line := glyph + " " + name
-		if i == a.cursor {
-			lines = append(lines, selectedStyle.Render("▸ "+line))
-		} else {
-			lines = append(lines, "  "+line)
+// --- header -----------------------------------------------------------------
+
+func (a *App) renderHeader(w int) string {
+	left := gradient(" ◬ PROMPTER ILLUMINATI", gradFrom, gradTo, true) +
+		mutedStyle.Render("  ·  "+filepath.Base(a.cfg.Repo))
+
+	var live, waiting, done, failed int
+	for _, e := range a.entries {
+		switch {
+		case e.Gate != nil:
+			waiting++
+		case e.Live:
+			live++
+		case e.State == artifact.StateDone:
+			done++
+		case e.State == artifact.StateFailed || e.State == artifact.StateAborted:
+			failed++
 		}
 	}
-	return clipLines(strings.Join(lines, "\n"), w, h)
+	var stats []string
+	if live > 0 {
+		stats = append(stats, cyanStyle.Render(fmt.Sprintf("%s %d running", spin[a.frame%len(spin)], live)))
+	}
+	if waiting > 0 {
+		stats = append(stats, amberStyle.Bold(true).Render(fmt.Sprintf("◆ %d waiting", waiting)))
+	}
+	if done > 0 {
+		stats = append(stats, greenStyle.Render(fmt.Sprintf("✔ %d", done)))
+	}
+	if failed > 0 {
+		stats = append(stats, redStyle.Render(fmt.Sprintf("✘ %d", failed)))
+	}
+	right := strings.Join(stats, mutedStyle.Render("  ")) + " "
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return truncate(left, w)
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func (a *App) renderRight(w, h int) string {
+// --- sidebar ----------------------------------------------------------------
+
+func (a *App) renderSidebar(w, h int) string {
+	inner := w - 4
+	rows := h - 2
+	title := "WORKTREES"
+	if n := len(a.entries); n > 0 {
+		title += mutedStyle.Render(fmt.Sprintf(" %d", n))
+	}
+	if len(a.entries) == 0 {
+		lines := []string{"",
+			mutedStyle.Render("No runs yet."), "",
+			textStyle.Render("type a prompt below"),
+			textStyle.Render("and press ") + goldStyle.Render("enter"),
+		}
+		return panel(title, lines, w, h, cFaint)
+	}
+
+	visible := max(1, (rows+1)/entryLines)
+	if a.cursor < a.listTop {
+		a.listTop = a.cursor
+	}
+	if a.cursor >= a.listTop+visible {
+		a.listTop = a.cursor - visible + 1
+	}
+	a.listTop = min(a.listTop, max(0, len(a.entries)-visible))
+
+	var lines []string
+	for i := a.listTop; i < len(a.entries) && i < a.listTop+visible; i++ {
+		e := a.entries[i]
+		sel := i == a.cursor
+		bar := "  "
+		titleSt := textStyle
+		if sel {
+			bar = goldStyle.Render("▌ ")
+			titleSt = boldStyle
+		}
+		icon := a.entryIcon(e)
+		prompt := strings.Join(strings.Fields(e.Prompt), " ")
+		if prompt == "" {
+			prompt = e.title()
+		}
+		l1 := bar + icon + " " + titleSt.Render(truncate(prompt, inner-4))
+
+		meta := []string{a.entryStateText(e)}
+		if e.Live {
+			meta = append(meta, elapsed(e.duration()))
+		} else if e.Run != nil {
+			meta = append(meta, ago(e.Run.CreatedAt))
+		}
+		if e.Run != nil && e.Run.Usage.CostUSD > 0 {
+			meta = append(meta, fmt.Sprintf("$%.2f", e.Run.Usage.CostUSD))
+		}
+		l2 := bar + "  " + mutedStyle.Render(truncate(strings.Join(meta, " · "), inner-4))
+		lines = append(lines, l1, l2, "")
+	}
+	if a.listTop > 0 {
+		lines[len(lines)-1] = mutedStyle.Render(fmt.Sprintf("  ↑ %d more", a.listTop))
+	}
+	if rest := len(a.entries) - a.listTop - visible; rest > 0 {
+		lines = append(lines[:min(len(lines), rows-1)], mutedStyle.Render(fmt.Sprintf("  ↓ %d more", rest)))
+	}
+	return panel(title, lines, w, h, cFaint)
+}
+
+func (a *App) entryIcon(e *Entry) string {
+	switch {
+	case e.Gate != nil:
+		if a.frame/4%2 == 0 {
+			return amberStyle.Bold(true).Render("◆")
+		}
+		return amberStyle.Render("◇")
+	case e.Live:
+		return cyanStyle.Render(spin[a.frame%len(spin)])
+	case e.State == artifact.StateDone:
+		return greenStyle.Render("✔")
+	case e.State == artifact.StateFailed:
+		return redStyle.Render("✘")
+	case e.State == artifact.StateAborted:
+		return amberStyle.Render("⊘")
+	default:
+		return mutedStyle.Render("◌")
+	}
+}
+
+func (a *App) entryStateText(e *Entry) string {
+	switch {
+	case e.Gate != nil:
+		return "needs you"
+	case e.State == artifact.StateGatePlan || e.State == artifact.StateGateReview:
+		return "gate"
+	case !e.Live && e.State != artifact.StateDone && e.State != artifact.StateFailed && e.State != artifact.StateAborted:
+		return "interrupted"
+	}
+	return strings.ReplaceAll(string(e.State), "_", " ")
+}
+
+// --- main pane --------------------------------------------------------------
+
+func (a *App) renderMain(w, h int) string {
+	inner := w - 4
+	rows := h - 2
 	e := a.current()
 	if e == nil {
-		return clipLines(dimStyle.Render("Select a worktree or start a new run."), w, h)
+		return panel("PIPELINE", a.welcome(inner, rows), w, h, cFaint)
 	}
-	state := ""
-	if e.State != "" {
-		state = dimStyle.Render("  " + string(e.State))
+
+	var top []string
+	for i, l := range wrap(strings.Join(strings.Fields(e.Prompt), " "), inner) {
+		if i == 2 {
+			top[1] = truncate(top[1], inner-1) + "…"
+			break
+		}
+		top = append(top, boldStyle.Render(l))
 	}
-	header := headerStyle.Render(truncate(e.title(), w-14)) + state
-
-	flow := a.renderFlow(e, w)
-	lines := []string{header, "", flow, ""}
-
+	top = append(top, a.metaLine(e, inner), "")
+	top = append(top, strings.Split(a.renderFlow(e, inner), "\n")...)
+	top = append(top, "")
+	if e.Gate != nil {
+		top = append(top, a.renderGate(e, inner)...)
+		top = append(top, "")
+	}
 	if e.ErrText != "" {
-		lines = append(lines, failStyle.Render(truncate("error: "+e.ErrText, w)), "")
+		errLines := wrap(sanitize(e.ErrText), inner-2)
+		if len(errLines) > 2 {
+			errLines = append(errLines[:2], "…")
+		}
+		for i, l := range errLines {
+			mark := "  "
+			if i == 0 {
+				mark = redStyle.Bold(true).Render("✘ ")
+			}
+			top = append(top, mark+redStyle.Render(l))
+		}
+		top = append(top, "")
 	}
 
-	used := 0
-	for _, l := range lines {
-		used += len(strings.Split(l, "\n"))
+	viewH := max(rows-len(top)-2, 3)
+	content := a.contentLines(e, inner)
+	maxOff := max(0, len(content)-viewH)
+	off := min(a.scroll, maxOff)
+	if a.follow {
+		off = maxOff
 	}
-	detailH := h - used
-	if detailH < 3 {
-		detailH = 3
+	a.lastMax, a.viewH = maxOff, viewH
+
+	lines := append(top, a.tabBar(e, inner, off, maxOff), faintStyle.Render(strings.Repeat("─", inner)))
+	lines = append(lines, content[off:min(len(content), off+viewH)]...)
+
+	title := "RUN " + mutedStyle.Render(truncate(e.title(), inner-8))
+	border := cFaint
+	if e.Gate != nil {
+		border = cAmber
 	}
-	lines = append(lines, a.renderDetail(e, w, detailH))
-	return clipLines(strings.Join(lines, "\n"), w, h)
+	return panel(title, lines, w, h, border)
 }
 
-func (a *App) modelsFor() map[agent.Kind]string {
-	return map[agent.Kind]string{
-		agent.Planner:  a.cfg.Models.Planner.Model,
-		agent.Executor: a.cfg.Models.Executor.Model,
-		agent.Reviewer: a.cfg.Models.Reviewer.Model,
+func (a *App) metaLine(e *Entry, w int) string {
+	var parts []string
+	if e.Run != nil && e.Run.Branch != "" {
+		parts = append(parts, violetStyle.Render("⎇ "+e.Run.Branch))
 	}
+	if e.Iter > 0 {
+		parts = append(parts, amberStyle.Render(fmt.Sprintf("iter %d", e.Iter)))
+	}
+	if e.Run != nil {
+		u := e.Run.Usage
+		if u.InputTokens+u.OutputTokens > 0 {
+			parts = append(parts, mutedStyle.Render(fmt.Sprintf("%s tok", tokens(u.InputTokens+u.OutputTokens))))
+		}
+		if u.CostUSD > 0 {
+			parts = append(parts, goldStyle.Render(fmt.Sprintf("$%.2f", u.CostUSD)))
+		}
+		if e.Run.Commit != "" {
+			parts = append(parts, greenStyle.Render("● "+shortSHA(e.Run.Commit)))
+		}
+	}
+	if d := e.duration(); d > 0 {
+		parts = append(parts, mutedStyle.Render("⏱ "+elapsed(d)))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, mutedStyle.Render("starting…"))
+	}
+	return truncate(strings.Join(parts, mutedStyle.Render("  ·  ")), w)
 }
+
+// --- pipeline flow ----------------------------------------------------------
 
 func (a *App) renderFlow(e *Entry, w int) string {
-	kinds := []agent.Kind{agent.Planner, agent.Executor, agent.Reviewer}
-	models := a.modelsFor()
-	boxW := (w - 2*lipgloss.Width(arrow) - 6) / 3
-	if boxW < 12 {
-		return a.renderFlowVertical(e, kinds, models, w)
+	cardW := (w - 2*arrowW) / 3
+	if cardW < minCardW {
+		return a.renderFlowVertical(e, w)
 	}
-	boxes := make([]string, 0, 5)
-	for i, k := range kinds {
+	parts := make([]string, 0, 5)
+	for i, k := range stageOrder {
 		if i > 0 {
-			boxes = append(boxes, arrow)
+			col := cFaint
+			if e.Stages[stageOrder[i-1]].done {
+				col = cGreen
+			}
+			parts = append(parts, lipgloss.NewStyle().Foreground(col).Render(" ━━▶ "))
 		}
-		boxes = append(boxes, stageBox(k, models[k], e.Stages[k], a.frame, boxW))
+		parts = append(parts, a.stageCard(e, k, cardW))
 	}
-	flow := lipgloss.JoinHorizontal(lipgloss.Center, boxes...)
-	if e.Iter > 0 {
-		loop := "↺ fix loop · iteration " + strconv.Itoa(e.Iter)
-		flow += "\n" + dimStyle.Render(center(loop, lipgloss.Width(flow)))
-	}
-	return flow
+	row := lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+	flow := row + "\n" + a.loopLine(e, cardW)
+	pad := strings.Repeat(" ", max(0, (w-lipgloss.Width(row))/2))
+	return pad + strings.ReplaceAll(flow, "\n", "\n"+pad)
 }
 
-func (a *App) renderFlowVertical(e *Entry, kinds []agent.Kind, models map[agent.Kind]string, w int) string {
-	var rows []string
-	for i, k := range kinds {
-		glyph, state := stageStatus(e.Stages[k], a.frame)
-		label := "[" + strings.ToUpper(string(k)) + "]"
-		rows = append(rows, fmt.Sprintf("%-10s %-16s %s %s",
-			label, truncate(models[k], 16), glyph, truncate(state, w-32)))
-		if i < len(kinds)-1 {
-			rows = append(rows, "    │", "    ▼")
+// loopLine draws the fix-loop return path from the reviewer back to the
+// executor underneath the cards.
+func (a *App) loopLine(e *Entry, cardW int) string {
+	execMid := cardW + arrowW + cardW/2
+	revMid := 2*(cardW+arrowW) + cardW/2
+	span := revMid - execMid - 2 // between "╰◀" and "╯"
+	label := fmt.Sprintf(" ↺ fix loop · max %d ", a.cfg.Loop.MaxIterations)
+	st := faintStyle
+	labelSt := mutedStyle
+	if e.Iter > 0 {
+		label = fmt.Sprintf(" ↺ fix loop · iteration %d ", e.Iter)
+		st, labelSt = amberStyle, amberStyle.Bold(true)
+	}
+	for _, short := range []string{fmt.Sprintf(" ↺ fix loop #%d ", e.Iter), fmt.Sprintf(" ↺ %d ", e.Iter)} {
+		if lipgloss.Width(label) <= span {
+			break
 		}
+		label = short
+	}
+	left := (span - lipgloss.Width(label)) / 2
+	right := span - lipgloss.Width(label) - left
+	if left < 0 || right < 0 {
+		return ""
+	}
+	return strings.Repeat(" ", execMid) +
+		st.Render("╰◀"+strings.Repeat("─", left)) + labelSt.Render(label) +
+		st.Render(strings.Repeat("─", right)+"╯")
+}
+
+func (a *App) stageCard(e *Entry, k agent.Kind, w int) string {
+	si := e.Stages[k]
+	glyph, word, col := a.stageStatus(si, e.Live)
+
+	border := cFaint
+	switch {
+	case si.failed:
+		border = cRed
+	case si.done:
+		border = cGreen
+	case si.status != "" && e.Live:
+		border = cCyan
+		if a.frame/5%2 == 1 {
+			border = cViolet
+		}
+	case si.status != "":
+		border = cAmber
+	}
+	inner := w - 2
+	role := lipgloss.NewStyle().Foreground(roleColor[k]).Bold(true).
+		Render(roleGlyph[k] + " " + strings.ToUpper(string(k)))
+	model := mutedStyle.Render(truncate(a.agentName(k)+" · "+a.modelName(k), inner))
+	status := lipgloss.NewStyle().Foreground(col).Render(truncate(glyph+" "+word, inner))
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Width(inner).
+		Align(lipgloss.Center).
+		Render(role + "\n" + model + "\n" + status)
+}
+
+func (a *App) renderFlowVertical(e *Entry, w int) string {
+	var rows []string
+	for i, k := range stageOrder {
+		glyph, word, col := a.stageStatus(e.Stages[k], e.Live)
+		role := lipgloss.NewStyle().Foreground(roleColor[k]).Bold(true).
+			Render(fmt.Sprintf("%s %-8s", roleGlyph[k], strings.ToUpper(string(k))))
+		st := lipgloss.NewStyle().Foreground(col).Render(glyph + " " + word)
+		model := mutedStyle.Render(a.modelName(k))
+		rows = append(rows, truncate(role+"  "+st+"  "+model, w))
+		if i < len(stageOrder)-1 {
+			rows = append(rows, faintStyle.Render("  │"))
+		}
+	}
+	if e.Iter > 0 {
+		rows = append(rows, amberStyle.Render(fmt.Sprintf("  ↺ fix loop · iteration %d", e.Iter)))
 	}
 	return strings.Join(rows, "\n")
 }
 
-func stageBox(k agent.Kind, model string, si *StageInfo, frame, w int) string {
-	glyph, state := stageStatus(si, frame)
-	content := fmt.Sprintf("%s\n%s\n%s %s",
-		strings.ToUpper(string(k)), truncate(model, w), glyph, truncate(state, w-3))
-	style := boxStyle
-	switch {
-	case si != nil && si.failed:
-		style = boxFail
-	case si != nil && si.done:
-		style = boxDone
-	case si != nil && si.status != "":
-		style = boxActive
-	}
-	return style.Width(w).Render(content)
-}
-
-func stageStatus(si *StageInfo, frame int) (string, string) {
-	if si == nil {
-		return "·", "pending"
-	}
+func (a *App) stageStatus(si *StageInfo, live bool) (glyph, word string, col lipgloss.AdaptiveColor) {
 	switch {
 	case si.failed:
-		return "✗", oneWord(si.status)
+		return "✘", statusWord(si.status, "failed"), cRed
 	case si.done:
-		return "✓", "done"
+		return "✔", "done", cGreen
+	case si.status != "" && live:
+		return spin[a.frame%len(spin)], statusWord(si.status, "running"), cCyan
 	case si.status != "":
-		return spin[frame%len(spin)], oneWord(si.status)
+		return "◌", "stalled", cAmber
 	default:
-		return "·", "pending"
+		return "·", "pending", cMuted
 	}
 }
 
-func oneWord(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "pending"
+func statusWord(status, fallback string) string {
+	s := strings.TrimSpace(status)
+	switch {
+	case s == "":
+		return fallback
+	case strings.Contains(strings.ToLower(s), "awaiting"):
+		return "your turn"
 	}
 	if i := strings.IndexByte(s, ' '); i > 0 {
 		return s[:i]
@@ -203,65 +392,242 @@ func oneWord(s string) string {
 	return s
 }
 
-func (a *App) renderDetail(e *Entry, w, h int) string {
-	if e.Gate != nil {
-		var banner, body string
-		switch e.Gate.kind {
-		case gatePlan:
-			banner = gateStyle.Render("[a]pprove   [r]eject") + "\n"
-			body = ui.RenderPlan(e.Gate.plan)
-		case gateReview:
-			body = ui.RenderReview(e.Gate.review)
-			if e.Gate.review != nil && e.Gate.review.Pass() {
-				banner = gateStyle.Render("[a]pprove   [f]ix   [r]eject") + "\n"
-			} else {
-				banner = gateStyle.Render("[f]ix   [r]eject   [a]ccept anyway") + "\n"
+func (a *App) agentName(k agent.Kind) string {
+	switch k {
+	case agent.Planner:
+		return a.cfg.Models.Planner.Agent
+	case agent.Executor:
+		return a.cfg.Models.Executor.Agent
+	default:
+		return a.cfg.Models.Reviewer.Agent
+	}
+}
+
+func (a *App) modelName(k agent.Kind) string {
+	switch k {
+	case agent.Planner:
+		return a.cfg.Models.Planner.Model
+	case agent.Executor:
+		return a.cfg.Models.Executor.Model
+	default:
+		return a.cfg.Models.Reviewer.Model
+	}
+}
+
+// --- gate, tabs and content ---------------------------------------------------
+
+func (a *App) renderGate(e *Entry, w int) []string {
+	bar := amberStyle.Render("┃ ")
+	var title string
+	var chips []string
+	switch e.Gate.kind {
+	case gatePlan:
+		title = "PLAN READY — approve to start the executor"
+		chips = []string{chip("a", "approve", cGreen), chip("r", "reject", cRed)}
+	case gateReview:
+		if e.Gate.review != nil && e.Gate.review.Pass() {
+			title = "REVIEW PASSED — approve to commit the branch"
+			chips = []string{chip("a", "approve", cGreen), chip("f", "another fix pass", cAmber), chip("r", "reject", cRed)}
+		} else {
+			title = "REVIEW FAILED — send the issues back or stop"
+			chips = []string{chip("f", "fix", cAmber), chip("r", "reject", cRed)}
+		}
+	}
+	return []string{
+		bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2)),
+		bar + truncate(strings.Join(chips, "   "), w-2),
+	}
+}
+
+func (a *App) tabBar(e *Entry, w, off, maxOff int) string {
+	var parts []string
+	for i, name := range tabNames {
+		label := fmt.Sprintf("%d %s", i+1, name)
+		switch tab(i) {
+		case tabPlan:
+			if e.Plan != nil {
+				label += fmt.Sprintf(" %d", len(e.Plan.Steps))
+			}
+		case tabReview:
+			if e.Review != nil {
+				if e.Review.Pass() {
+					label += " ✔"
+				} else {
+					label += " ✘"
+				}
 			}
 		}
-		return banner + clipLines(body, w, h-2)
-	}
-	logs := a.logs[e]
-	if len(logs) == 0 {
-		if e.Review != nil {
-			return clipLines(ui.RenderReview(e.Review), w, h)
+		if tab(i) == a.tab {
+			parts = append(parts, tabActive.Render(label))
+		} else {
+			parts = append(parts, tabInactive.Render(label))
 		}
-		if e.Plan != nil {
-			return clipLines(ui.RenderPlan(e.Plan), w, h)
-		}
-		return dimStyle.Render("no output yet")
 	}
-	start := len(logs) - h
-	if start < 0 {
-		start = 0
+	left := strings.Join(parts, "   ")
+
+	right := ""
+	switch {
+	case maxOff == 0:
+	case a.follow:
+		right = cyanStyle.Render("● live")
+	default:
+		right = mutedStyle.Render(fmt.Sprintf("%d%%", off*100/maxOff))
 	}
-	return clipLines(strings.Join(logs[start:], "\n"), w, h)
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		return truncate(left, w)
+	}
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func (a *App) renderInput(w int) string {
-	var val string
-	if a.inputFocus {
-		val = string(a.input) + "▏"
-	} else {
-		val = dimStyle.Render(string(a.input))
+// contentLines renders the selected tab, cached until the entry changes.
+func (a *App) contentLines(e *Entry, w int) []string {
+	switch a.tab {
+	case tabActivity:
+		e.ensureLogs()
+	case tabDiff:
+		e.ensureDiff()
 	}
-	line := promptStyle.Render("> ") + val
-	hint := "n new prompt   ↑/↓ select   a/f/r gate   q quit"
-	if a.inputFocus {
-		hint = "enter run   esc cancel"
+	c := &a.cache
+	if c.entry == e && c.tab == a.tab && c.width == w && c.ver == e.ver && c.lines != nil {
+		return c.lines
 	}
-	return truncate(line, w) + "\n" + dimStyle.Render(truncate(hint, w))
+	var lines []string
+	switch a.tab {
+	case tabActivity:
+		if len(e.Logs) == 0 {
+			lines = emptyNote("No activity recorded for this run.", w)
+		} else {
+			lines = renderActivity(e.Logs, w)
+		}
+	case tabPlan:
+		lines = renderPlan(e.Plan, w)
+	case tabReview:
+		lines = renderReview(e.Review, w)
+	case tabDiff:
+		lines = renderDiff(e.Diff, w)
+	}
+	*c = contentCache{entry: e, tab: a.tab, width: w, ver: e.ver, lines: lines}
+	return lines
 }
 
-// clipLines truncates every line to width w and keeps at most h lines.
-func clipLines(s string, w, h int) string {
-	raw := strings.Split(s, "\n")
-	if len(raw) > h {
-		raw = raw[:h]
+func (a *App) welcome(w, h int) []string {
+	art := []string{
+		"      ▲      ",
+		"     ╱ ╲     ",
+		"    ╱ ◉ ╲    ",
+		"   ╱─────╲   ",
+		"  ╱       ╲  ",
+		" ▔▔▔▔▔▔▔▔▔▔▔ ",
 	}
-	for i, l := range raw {
-		raw[i] = truncate(l, w)
+	var out []string
+	for _, l := range art {
+		out = append(out, gradient(l, gradFrom, gradTo, true))
 	}
-	return strings.Join(raw, "\n")
+	out = append(out, "",
+		gradient("prompter illuminati", gradFrom, gradTo, true),
+		mutedStyle.Render("one prompt · three minds · isolated worktree"),
+		"",
+		lipgloss.NewStyle().Foreground(cViolet).Render("plan")+faintStyle.Render(" ━▶ ")+
+			lipgloss.NewStyle().Foreground(cCyan).Render("execute")+faintStyle.Render(" ━▶ ")+
+			lipgloss.NewStyle().Foreground(cGold).Render("review"),
+		mutedStyle.Render(fmt.Sprintf("%s · %s · %s",
+			a.cfg.Models.Planner.Model, a.cfg.Models.Executor.Model, a.cfg.Models.Reviewer.Model)),
+		"",
+		textStyle.Render("press ")+goldStyle.Bold(true).Render("n")+textStyle.Render(" and describe a change"),
+	)
+	for i, l := range out {
+		out[i] = lipgloss.PlaceHorizontal(w, lipgloss.Center, l)
+	}
+	if pad := (h - len(out)) / 2; pad > 0 {
+		out = append(make([]string, pad), out...)
+	}
+	return out
+}
+
+// --- footer -----------------------------------------------------------------
+
+func (a *App) renderFooter(w int) string {
+	if a.confirmQuit {
+		n := a.liveCount()
+		msg := amberStyle.Bold(true).Render(fmt.Sprintf("⚠ %d run(s) in flight.", n)) +
+			textStyle.Render(" Quitting cancels them and removes their worktrees. ") +
+			chip("q", "quit", cRed) + "  " + chip("esc", "stay", cMuted)
+		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cAmber).
+			Padding(0, 1).Width(w - 2)
+		return box.Render(truncate(msg, w-4)) + "\n"
+	}
+
+	border := cFaint
+	if a.inputFocus {
+		border = cGold
+	}
+	caret := goldStyle.Bold(true).Render("❯ ")
+	avail := w - 8
+	var body string
+	switch {
+	case len(a.input) == 0 && a.inputFocus:
+		body = lipgloss.NewStyle().Reverse(true).Render(" ") +
+			mutedStyle.Render(" describe the change you want…")
+	case len(a.input) == 0:
+		body = mutedStyle.Render("press n to write a prompt")
+	default:
+		text := tail(string(a.input), avail)
+		if a.inputFocus {
+			body = textStyle.Render(text) + lipgloss.NewStyle().Reverse(true).Render(" ")
+		} else {
+			body = mutedStyle.Render(text)
+		}
+	}
+	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
+		Padding(0, 1).Width(w - 2).Render(caret + body)
+
+	var hints []string
+	e := a.current()
+	switch {
+	case a.inputFocus:
+		hints = []string{keyHint("enter", "run"), keyHint("esc", "back"), keyHint("ctrl+u", "clear"), keyHint("ctrl+w", "delete word")}
+	case e != nil && e.Gate != nil:
+		switch {
+		case e.Gate.kind == gatePlan:
+			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
+		case e.Gate.review != nil && e.Gate.review.Pass():
+			hints = []string{keyHint("a", "approve"), keyHint("f", "fix"), keyHint("r", "reject")}
+		default:
+			hints = []string{keyHint("f", "fix"), keyHint("r", "reject")}
+		}
+		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), keyHint("q", "quit"))
+	default:
+		hints = []string{keyHint("n", "new prompt"), keyHint("↑↓", "select"), keyHint("tab", "views"),
+			keyHint("pgup/pgdn", "scroll"), keyHint("g/G", "top/bottom"), keyHint("q", "quit")}
+	}
+	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
+}
+
+// --- layout helpers ---------------------------------------------------------
+
+// panel draws a rounded box of exactly w×h cells with the title set into the
+// top border.
+func panel(title string, lines []string, w, h int, border lipgloss.AdaptiveColor) string {
+	bs := lipgloss.NewStyle().Foreground(border)
+	inner := w - 2
+	t := " " + truncate(title, inner-4) + " "
+	tw := lipgloss.Width(t)
+	top := bs.Render("╭─") + goldStyle.Bold(true).Render(t) + bs.Render(strings.Repeat("─", max(0, inner-1-tw))+"╮")
+
+	out := make([]string, 0, h)
+	out = append(out, top)
+	cw := inner - 2
+	for i := 0; i < h-2; i++ {
+		l := ""
+		if i < len(lines) {
+			l = truncate(lines[i], cw)
+		}
+		pad := max(0, cw-lipgloss.Width(l))
+		out = append(out, bs.Render("│")+" "+l+strings.Repeat(" ", pad)+" "+bs.Render("│"))
+	}
+	out = append(out, bs.Render("╰"+strings.Repeat("─", inner)+"╯"))
+	return strings.Join(out, "\n")
 }
 
 func truncate(s string, n int) string {
@@ -271,11 +637,21 @@ func truncate(s string, n int) string {
 	return ansi.Truncate(s, n, "…")
 }
 
-func center(s string, w int) string {
-	sw := lipgloss.Width(s)
-	if w <= sw {
+// tail keeps the rightmost cells of s that fit in n, marking the cut with "…".
+func tail(s string, n int) string {
+	if lipgloss.Width(s) <= n {
 		return s
 	}
-	pad := (w - sw) / 2
-	return strings.Repeat(" ", pad) + s
+	r := []rune(s)
+	for len(r) > 0 && lipgloss.Width(string(r))+1 > n {
+		r = r[1:]
+	}
+	return "…" + string(r)
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 10 {
+		return sha[:10]
+	}
+	return sha
 }

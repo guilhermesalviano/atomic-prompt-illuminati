@@ -1,12 +1,14 @@
 // Package tui implements the Bubble Tea dashboard: a prompt input, a list of
-// worktrees/runs on the left and an ASCII view of the plan → execute → review
-// pipeline for the selected run.
+// worktrees/runs on the left and, for the selected run, the plan → execute →
+// review pipeline with tabbed activity, plan, review and diff views.
 package tui
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,21 @@ import (
 	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
 )
 
+// tab is one of the detail views for the selected run.
+type tab int
+
+const (
+	tabActivity tab = iota
+	tabPlan
+	tabReview
+	tabDiff
+	tabCount
+)
+
+var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff"}
+
+const maxLogs = 1000
+
 // App is the dashboard model. It implements tea.Model and owns the sessions
 // that pipeline runs use as their ui.Gate.
 type App struct {
@@ -30,11 +47,20 @@ type App struct {
 	cfg     *config.Config
 	entries []*Entry
 	cursor  int
+	listTop int
 
 	input      []rune
 	inputFocus bool
 
-	logs    map[*Entry][]string
+	tab     tab
+	scroll  int  // content offset from the top
+	follow  bool // keep the content pinned to the bottom
+	lastMax int  // max scroll offset seen by the last render
+	viewH   int  // content viewport height seen by the last render
+	cache   contentCache
+
+	confirmQuit bool
+
 	width   int
 	height  int
 	frame   int
@@ -46,9 +72,17 @@ type App struct {
 	prog    *tea.Program
 }
 
+type contentCache struct {
+	entry *Entry
+	tab   tab
+	width int
+	ver   int
+	lines []string
+}
+
 // NewApp builds the dashboard, loading historical runs from baseDir.
 func NewApp(cfg *config.Config, baseDir string) *App {
-	a := &App{cfg: cfg, width: 100, height: 30, logs: map[*Entry][]string{}}
+	a := &App{cfg: cfg, width: 100, height: 30, follow: true}
 	runs, _ := artifact.List(baseDir)
 	for _, r := range runs {
 		a.entries = append(a.entries, entryFromRun(r))
@@ -103,6 +137,11 @@ func (s *Session) Line(ev agent.Event) { s.app.send(lineEventMsg{entry: s.entry,
 func (s *Session) Info(msg string)     { s.app.send(infoEventMsg{entry: s.entry, text: msg}) }
 func (s *Session) Close()              {}
 
+// RunUpdated implements pipeline.RunObserver.
+func (s *Session) RunUpdated(run artifact.Run) {
+	s.app.send(runEventMsg{entry: s.entry, run: run})
+}
+
 func (s *Session) PlanGate(ctx context.Context, plan *contracts.Plan, diff string) (ui.Decision, error) {
 	return s.gate(ctx, &gateReq{kind: gatePlan, plan: plan, diff: diff})
 }
@@ -137,6 +176,8 @@ type StageInfo struct {
 	failed bool
 }
 
+var stageOrder = []agent.Kind{agent.Planner, agent.Executor, agent.Reviewer}
+
 // Entry is one run shown in the worktree list.
 type Entry struct {
 	ID      string
@@ -152,20 +193,30 @@ type Entry struct {
 	ErrText string
 	Plan    *contracts.Plan
 	Review  *contracts.Review
+	Diff    string
+	Logs    []logLine
+	Started time.Time
+	Ended   time.Time
+
+	ver        int // bumped on every change; keys the render cache
+	logsLoaded bool
+	diffAt     time.Time
+}
+
+func newStages() map[agent.Kind]*StageInfo {
+	return map[agent.Kind]*StageInfo{agent.Planner: {}, agent.Executor: {}, agent.Reviewer: {}}
 }
 
 func newEntry(prompt, repo string) *Entry {
 	return &Entry{
-		ID:     "live-" + shortID(prompt),
-		Prompt: prompt,
-		Repo:   repo,
-		Live:   true,
-		State:  artifact.StatePreflight,
-		Stages: map[agent.Kind]*StageInfo{
-			agent.Planner:  {},
-			agent.Executor: {},
-			agent.Reviewer: {},
-		},
+		ID:         "live-" + shortID(prompt),
+		Prompt:     prompt,
+		Repo:       repo,
+		Live:       true,
+		State:      artifact.StatePreflight,
+		Stages:     newStages(),
+		Started:    time.Now(),
+		logsLoaded: true,
 	}
 }
 
@@ -178,15 +229,15 @@ func entryFromRun(r *artifact.Run) *Entry {
 		State:   r.State,
 		Iter:    r.Iteration,
 		ErrText: r.Error,
-		Stages: map[agent.Kind]*StageInfo{
-			agent.Planner:  {},
-			agent.Executor: {},
-			agent.Reviewer: {},
-		},
+		Stages:  newStages(),
+		Started: r.CreatedAt,
+		Ended:   r.UpdatedAt,
 	}
 	e.hydrate()
 	return e
 }
+
+func (e *Entry) touch() { e.ver++ }
 
 // hydrate derives stage display state and loads plan/review artifacts.
 func (e *Entry) hydrate() {
@@ -205,19 +256,52 @@ func (e *Entry) hydrate() {
 		done(agent.Executor)
 		e.Stages[agent.Reviewer].status = fmt.Sprintf("reviewing (iter %d)", e.Iter)
 	case artifact.StateCommitting, artifact.StateDone:
-		done(agent.Planner)
-		done(agent.Executor)
-		done(agent.Reviewer)
+		for _, k := range stageOrder {
+			done(k)
+		}
 	case artifact.StateFailed, artifact.StateAborted:
-		if e.Stages[agent.Reviewer].status != "" {
-			e.Stages[agent.Reviewer].failed = true
-		} else if e.Stages[agent.Executor].status != "" {
-			e.Stages[agent.Executor].failed = true
-		} else {
-			e.Stages[agent.Planner].failed = true
+		reached := e.reachedStage()
+		for _, k := range stageOrder {
+			si := e.Stages[k]
+			if k == reached {
+				si.failed, si.done, si.status = true, false, string(e.State)
+				break
+			}
+			si.done = true
+		}
+	}
+	e.loadArtifacts()
+	e.touch()
+}
+
+// reachedStage reports the furthest stage a finished run got to: from live
+// stage statuses when we watched it, otherwise from the artifacts on disk.
+func (e *Entry) reachedStage() agent.Kind {
+	for i := len(stageOrder) - 1; i >= 0; i-- {
+		if e.Stages[stageOrder[i]].status != "" {
+			return stageOrder[i]
 		}
 	}
 	if e.Run == nil {
+		return agent.Planner
+	}
+	has := func(pattern string) bool {
+		m, _ := filepath.Glob(e.Run.Path(pattern))
+		return len(m) > 0
+	}
+	switch {
+	case has("review.json"), has("reviewer.events.*"):
+		return agent.Reviewer
+	case has("diff.patch"), has("executor.*"):
+		return agent.Executor
+	}
+	return agent.Planner
+}
+
+// loadArtifacts reads plan.json and review.json when the run directory is
+// known. Both files are small.
+func (e *Entry) loadArtifacts() {
+	if e.Run == nil || e.Run.Dir == "" {
 		return
 	}
 	if data, err := e.Run.Read("plan.json"); err == nil {
@@ -234,6 +318,46 @@ func (e *Entry) hydrate() {
 	}
 }
 
+// ensureLogs replays persisted agent events for runs we did not watch live.
+func (e *Entry) ensureLogs() {
+	if e.logsLoaded || e.Run == nil {
+		return
+	}
+	e.logsLoaded = true
+	e.Logs = replayEvents(e.Run.Dir)
+	e.touch()
+}
+
+// ensureDiff loads diff.patch, re-reading it at most every two seconds while
+// the run is live.
+func (e *Entry) ensureDiff() {
+	if e.Run == nil || e.Run.Dir == "" {
+		return
+	}
+	if !e.diffAt.IsZero() && (!e.Live || time.Since(e.diffAt) < 2*time.Second) {
+		return
+	}
+	e.diffAt = time.Now()
+	if data, err := os.ReadFile(e.Run.Path("diff.patch")); err == nil && string(data) != e.Diff {
+		e.Diff = string(data)
+		e.touch()
+	}
+}
+
+func (e *Entry) push(l logLine) {
+	if strings.TrimSpace(l.text) == "" {
+		return
+	}
+	if l.at.IsZero() {
+		l.at = time.Now()
+	}
+	e.Logs = append(e.Logs, l)
+	if len(e.Logs) > maxLogs {
+		e.Logs = e.Logs[len(e.Logs)-maxLogs:]
+	}
+	e.touch()
+}
+
 func (e *Entry) title() string {
 	if e.Run != nil && e.Run.ID != "" {
 		return e.Run.ID
@@ -241,23 +365,17 @@ func (e *Entry) title() string {
 	return e.ID
 }
 
-func (e *Entry) stateLabel() (glyph, text string) {
-	if e.Gate != nil {
-		return "?", "needs you"
+func (e *Entry) duration() time.Duration {
+	if e.Started.IsZero() {
+		return 0
 	}
-	switch e.State {
-	case artifact.StateDone:
-		return "✓", "done"
-	case artifact.StateFailed:
-		return "✗", "failed"
-	case artifact.StateAborted:
-		return "✗", "aborted"
-	default:
-		if e.Live {
-			return "●", string(e.State)
-		}
-		return "·", string(e.State)
+	if e.Live {
+		return time.Since(e.Started)
 	}
+	if e.Ended.Before(e.Started) {
+		return 0
+	}
+	return e.Ended.Sub(e.Started)
 }
 
 // --- messages ---------------------------------------------------------------
@@ -291,6 +409,10 @@ type (
 		entry *Entry
 		text  string
 	}
+	runEventMsg struct {
+		entry *Entry
+		run   artifact.Run
+	}
 	gateEventMsg struct {
 		entry *Entry
 		req   *gateReq
@@ -304,20 +426,16 @@ type (
 )
 
 func tick() tea.Cmd {
-	return tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 // Init implements tea.Model.
 func (a *App) Init() tea.Cmd {
 	cmds := []tea.Cmd{tick()}
-	if a.initial != "" {
-		a.input = []rune(a.initial)
-		if a.autoRun {
-			cmds = append(cmds, a.startRun(a.initial))
-		} else {
-			a.inputFocus = true
-		}
+	if a.initial != "" && a.autoRun {
+		cmds = append(cmds, a.startRun(a.initial))
 	} else {
+		a.input = []rune(a.initial)
 		a.inputFocus = true
 	}
 	return tea.Batch(cmds...)
@@ -338,33 +456,56 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.mutate(t.entry, func(e *Entry) {
 			e.State = stateFromStage(t.kind, e.State)
 			applyStage(e, t.kind, t.text)
-			a.pushLocked(e, t.text)
+			e.loadArtifacts()
+			e.push(logLine{kind: t.kind, level: levelStage, text: t.text})
 		})
-		return a, nil
 
 	case lineEventMsg:
-		if t.ev.Stream == "status" {
-			a.mutate(t.entry, func(e *Entry) { a.pushLocked(e, t.ev.Line) })
-		} else if t.ev.Stream == "stderr" && strings.TrimSpace(t.ev.Line) != "" {
-			a.mutate(t.entry, func(e *Entry) { a.pushLocked(e, "! "+t.ev.Line) })
+		if l, ok := summarizeEvent(t.ev); ok {
+			a.mutate(t.entry, func(e *Entry) { e.push(l) })
 		}
-		return a, nil
 
 	case infoEventMsg:
-		a.mutate(t.entry, func(e *Entry) { a.pushLocked(e, t.text) })
-		return a, nil
+		a.mutate(t.entry, func(e *Entry) { e.push(logLine{level: levelInfo, text: sanitize(t.text)}) })
+
+	case runEventMsg:
+		a.mutate(t.entry, func(e *Entry) {
+			run := t.run
+			e.Run = &run
+			if run.Iteration > e.Iter {
+				e.Iter = run.Iteration
+			}
+			e.touch()
+		})
 
 	case gateEventMsg:
-		t.entry.Gate = t.req
+		a.mutate(t.entry, func(e *Entry) {
+			e.Gate = t.req
+			switch t.req.kind {
+			case gatePlan:
+				e.Plan = t.req.plan
+			case gateReview:
+				e.Review = t.req.review
+				if t.req.diff != "" {
+					e.Diff = t.req.diff
+				}
+			}
+			e.touch()
+		})
 		if a.current() == t.entry {
 			a.inputFocus = false
+			if t.req.kind == gatePlan {
+				a.setTab(tabPlan)
+			} else {
+				a.setTab(tabReview)
+			}
 		}
-		return a, nil
 
 	case doneEventMsg:
 		a.mutate(t.entry, func(e *Entry) {
 			e.Gate = nil
 			e.Live = false
+			e.Ended = time.Now()
 			if t.run != nil {
 				e.Run = t.run
 				e.State = t.run.State
@@ -377,9 +518,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			e.hydrate()
-			a.pushLocked(e, "run finished: "+string(e.State))
+			e.diffAt = time.Time{}
+			e.push(logLine{level: levelStage, text: "run finished: " + string(e.State)})
 		})
-		return a, nil
 
 	case tea.KeyMsg:
 		return a.handleKey(t)
@@ -388,12 +529,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if a.confirmQuit {
+		switch msg.String() {
+		case "q", "y", "ctrl+c":
+			return a, tea.Quit
+		default:
+			a.confirmQuit = false
+		}
+		return a, nil
+	}
+
 	if a.inputFocus {
 		switch msg.Type {
 		case tea.KeyEsc, tea.KeyTab:
 			a.inputFocus = false
 		case tea.KeyCtrlC:
-			return a, tea.Quit
+			return a.quit()
 		case tea.KeyEnter:
 			prompt := strings.TrimSpace(string(a.input))
 			a.input = nil
@@ -405,6 +556,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(a.input) > 0 {
 				a.input = a.input[:len(a.input)-1]
 			}
+		case tea.KeyCtrlU:
+			a.input = nil
+		case tea.KeyCtrlW:
+			s := strings.TrimRight(string(a.input), " ")
+			if i := strings.LastIndexByte(s, ' '); i >= 0 {
+				a.input = []rune(s[:i+1])
+			} else {
+				a.input = nil
+			}
 		case tea.KeySpace:
 			a.input = append(a.input, ' ')
 		case tea.KeyRunes:
@@ -415,13 +575,27 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return a, tea.Quit
+		return a.quit()
 	case "n", "/", "i":
 		a.inputFocus = true
 	case "up", "k":
 		a.move(-1)
 	case "down", "j":
 		a.move(1)
+	case "tab", "right", "l":
+		a.setTab((a.tab + 1) % tabCount)
+	case "shift+tab", "left", "h":
+		a.setTab((a.tab + tabCount - 1) % tabCount)
+	case "1", "2", "3", "4":
+		a.setTab(tab(msg.String()[0] - '1'))
+	case "pgdown", "ctrl+d", "J", "shift+down":
+		a.scrollBy(max(1, a.viewH/2))
+	case "pgup", "ctrl+u", "K", "shift+up":
+		a.scrollBy(-max(1, a.viewH/2))
+	case "g", "home":
+		a.scroll, a.follow = 0, false
+	case "G", "end":
+		a.scroll, a.follow = a.lastMax, true
 	case "a":
 		a.answer(ui.Approve)
 	case "f":
@@ -432,6 +606,26 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// quit exits immediately when nothing is running; otherwise it asks first,
+// because quitting cancels every in-flight run.
+func (a *App) quit() (tea.Model, tea.Cmd) {
+	if a.liveCount() == 0 {
+		return a, tea.Quit
+	}
+	a.confirmQuit = true
+	return a, nil
+}
+
+func (a *App) liveCount() int {
+	n := 0
+	for _, e := range a.entries {
+		if e.Live {
+			n++
+		}
+	}
+	return n
+}
+
 // startRun appends a live entry and asks the host to run the pipeline.
 func (a *App) startRun(prompt string) tea.Cmd {
 	e := newEntry(prompt, a.cfg.Repo)
@@ -439,6 +633,7 @@ func (a *App) startRun(prompt string) tea.Cmd {
 	e.Session = s
 	a.entries = append([]*Entry{e}, a.entries...)
 	a.cursor = 0
+	a.setTab(tabActivity)
 	return func() tea.Msg {
 		if a.OnStart != nil {
 			a.OnStart(s, prompt)
@@ -451,22 +646,63 @@ func (a *App) move(delta int) {
 	if len(a.entries) == 0 {
 		return
 	}
-	a.cursor += delta
-	if a.cursor < 0 {
-		a.cursor = 0
-	}
-	if a.cursor >= len(a.entries) {
-		a.cursor = len(a.entries) - 1
+	next := min(max(a.cursor+delta, 0), len(a.entries)-1)
+	if next != a.cursor {
+		a.cursor = next
+		a.resetScroll()
 	}
 }
 
+func (a *App) setTab(t tab) {
+	a.tab = t
+	a.resetScroll()
+}
+
+func (a *App) resetScroll() {
+	a.scroll = 0
+	a.follow = a.tab == tabActivity
+}
+
+func (a *App) scrollBy(d int) {
+	cur := a.scroll
+	if a.follow {
+		cur = a.lastMax
+	}
+	cur = min(max(cur+d, 0), a.lastMax)
+	a.scroll = cur
+	a.follow = cur >= a.lastMax && a.tab == tabActivity
+}
+
+// answer resolves the selected run's pending gate. Keys that do not apply to
+// the current gate are ignored.
 func (a *App) answer(d ui.Decision) {
 	e := a.current()
 	if e == nil || e.Gate == nil || e.Gate.reply == nil {
 		return
 	}
+	if !gateAllows(e.Gate, d) {
+		return
+	}
 	e.Gate.reply <- d
 	e.Gate = nil
+	e.touch()
+	if d != ui.Reject {
+		a.setTab(tabActivity)
+	}
+}
+
+// gateAllows reports whether decision d is offered at gate g. A plan can only
+// be approved or rejected; a failed review can only be fixed or rejected.
+func gateAllows(g *gateReq, d ui.Decision) bool {
+	switch g.kind {
+	case gatePlan:
+		return d != ui.Fix
+	case gateReview:
+		if g.review != nil && !g.review.Pass() {
+			return d != ui.Approve
+		}
+	}
+	return true
 }
 
 func (a *App) current() *Entry {
@@ -476,33 +712,13 @@ func (a *App) current() *Entry {
 	return a.entries[a.cursor]
 }
 
-func (a *App) indexOf(e *Entry) int {
-	for i, x := range a.entries {
+func (a *App) mutate(e *Entry, fn func(*Entry)) {
+	for _, x := range a.entries {
 		if x == e {
-			return i
+			fn(e)
+			return
 		}
 	}
-	return -1
-}
-
-func (a *App) mutate(e *Entry, fn func(*Entry)) {
-	i := a.indexOf(e)
-	if i < 0 {
-		return
-	}
-	fn(a.entries[i])
-}
-
-func (a *App) pushLocked(e *Entry, line string) {
-	if strings.TrimSpace(line) == "" {
-		return
-	}
-	logs := a.logs[e]
-	logs = append(logs, line)
-	if len(logs) > 400 {
-		logs = logs[len(logs)-400:]
-	}
-	a.logs[e] = logs
 }
 
 func stateFromStage(k agent.Kind, cur artifact.State) artifact.State {
@@ -527,7 +743,10 @@ func applyStage(e *Entry, k agent.Kind, text string) {
 			e.Stages[agent.Planner].done = true
 		}
 	case agent.Executor:
+		// A new executor pass (fix loop) supersedes the previous review.
 		e.Stages[agent.Planner].done = true
+		si.done, si.failed = false, false
+		*e.Stages[agent.Reviewer] = StageInfo{}
 		if it, ok := parseIteration(text); ok {
 			e.Iter = it
 		}

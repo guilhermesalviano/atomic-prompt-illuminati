@@ -32,6 +32,7 @@ func (p *Pipeline) addUsage(res *agent.Result) {
 	}
 	p.Run.Usage.Add(res.Usage.InputTokens, res.Usage.OutputTokens, res.Usage.CostUSD)
 	_ = p.Run.Save()
+	p.notify()
 }
 
 func writeEvents(run *artifact.Run, name string, res *agent.Result) {

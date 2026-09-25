@@ -2,12 +2,17 @@ package tui
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
 	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
 	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
 )
 
 func testConfig() *config.Config {
@@ -141,5 +146,102 @@ func TestStartRunPrependsEntry(t *testing.T) {
 	a.startRun("second")
 	if len(a.entries) != 2 || !strings.HasPrefix(a.entries[0].Prompt, "second") {
 		t.Fatalf("newest entry not first: %+v", a.entries)
+	}
+}
+
+func TestFailedRunMarksStageFromArtifacts(t *testing.T) {
+	base := t.TempDir()
+	r, err := artifact.New(base, "/repo", "x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Write("executor.events.0.jsonl", []byte("{}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Fail(errors.New("codex exited 1")); err != nil {
+		t.Fatal(err)
+	}
+	e := entryFromRun(r)
+	if !e.Stages[agent.Planner].done || !e.Stages[agent.Executor].failed || e.Stages[agent.Reviewer].failed {
+		t.Fatalf("want planner done, executor failed: %+v %+v %+v",
+			e.Stages[agent.Planner], e.Stages[agent.Executor], e.Stages[agent.Reviewer])
+	}
+}
+
+func TestGateIgnoresKeysItDoesNotOffer(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("x", "/repo")
+	a.entries = []*Entry{e}
+
+	failed := &contracts.Review{Verdict: "fail", Summary: "no"}
+	e.Gate = &gateReq{kind: gateReview, review: failed, reply: make(chan ui.Decision, 1)}
+	a.answer(ui.Approve)
+	if e.Gate == nil {
+		t.Fatal("approve must not resolve a failed review gate")
+	}
+	req := e.Gate
+	a.answer(ui.Fix)
+	if e.Gate != nil || <-req.reply != ui.Fix {
+		t.Fatal("fix should resolve the failed review gate")
+	}
+
+	e.Gate = &gateReq{kind: gatePlan, reply: make(chan ui.Decision, 1)}
+	a.answer(ui.Fix)
+	if e.Gate == nil {
+		t.Fatal("fix must not resolve a plan gate")
+	}
+}
+
+func TestSummarizeEvent(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{`{"type":"item.started","item":{"type":"command_execution","command":"go test ./..."}}`, "$ go test ./..."},
+		{`{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"a.go","kind":"update"}]}}`, "update a.go"},
+		{`{"type":"tool_use","part":{"tool":"read","state":{"title":"main.go"}}}`, "read main.go"},
+		{`{"type":"step_finish","part":{}}`, ""},
+		{"plain \x1b[31mred\x1b[0m\ttext", "plain red    text"},
+	}
+	for _, c := range cases {
+		l, ok := summarizeEvent(agent.Event{Kind: agent.Executor, Stream: "stdout", Line: c.line})
+		if c.want == "" {
+			if ok {
+				t.Errorf("%s: expected event to be dropped, got %q", c.line, l.text)
+			}
+			continue
+		}
+		if !ok || !strings.Contains(l.text, c.want) {
+			t.Errorf("%s: got %q, want it to contain %q", c.line, l.text, c.want)
+		}
+	}
+}
+
+func TestViewFillsTerminalExactly(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("a long prompt that should wrap across more than one line in the header of the main pane", "/repo")
+	e.Plan = &contracts.Plan{Summary: "s", Steps: []contracts.PlanStep{{ID: "1", Description: "d"}}, AcceptanceCriteria: []string{"c"}}
+	e.Review = &contracts.Review{Verdict: "fail", Summary: "bad", Issues: []contracts.Issue{{Severity: "blocker", Description: "boom"}}}
+	e.Diff = "diff --git a/x b/x\n+added\n-removed\n"
+	e.Gate = &gateReq{kind: gateReview, review: e.Review}
+	e.ErrText = "something broke"
+	for i := 0; i < 50; i++ {
+		e.push(logLine{kind: agent.Executor, text: "line"})
+	}
+	a.entries = []*Entry{e}
+	for _, size := range [][2]int{{60, 16}, {80, 24}, {120, 40}, {200, 60}} {
+		a.width, a.height = size[0], size[1]
+		for tb := tab(0); tb < tabCount; tb++ {
+			a.setTab(tb)
+			lines := strings.Split(a.View(), "\n")
+			if len(lines) != size[1] {
+				t.Errorf("%dx%d tab %d: %d lines", size[0], size[1], tb, len(lines))
+			}
+			for i, l := range lines {
+				if lw := lipgloss.Width(l); lw > size[0] {
+					t.Errorf("%dx%d tab %d line %d: width %d", size[0], size[1], tb, i, lw)
+				}
+			}
+		}
 	}
 }

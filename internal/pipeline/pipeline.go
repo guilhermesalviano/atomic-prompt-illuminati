@@ -28,6 +28,12 @@ type Options struct {
 	Apply bool
 }
 
+// RunObserver is optionally implemented by a Gate that wants a snapshot of the
+// run record as soon as it exists and whenever its accounting changes.
+type RunObserver interface {
+	RunUpdated(run artifact.Run)
+}
+
 // Pipeline is a single orchestrator run.
 type Pipeline struct {
 	Cfg  *config.Config
@@ -52,7 +58,8 @@ func (p *Pipeline) agentFor(name string) (agent.Agent, error) {
 // Execute runs the full pipeline. On failure the worktree is cleaned up unless
 // KeepWorktree is set; on success the worktree and branch are retained.
 func (p *Pipeline) Execute(ctx context.Context) (err error) {
-	checks := preflight.Checks(p.Opts.Repo)
+	checks := preflight.Checks(p.Opts.Repo,
+		p.Cfg.Models.Planner.Agent, p.Cfg.Models.Executor.Agent, p.Cfg.Models.Reviewer.Agent)
 	for _, c := range checks {
 		status := "ok"
 		if !c.OK {
@@ -103,10 +110,18 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		_ = run.Write("config.resolved.yaml", cfgYAML)
 	}
 	p.Gate.Info("run " + run.ID + " -> " + run.Dir)
+	p.notify()
 
 	defer func() {
 		if err != nil {
-			_ = run.Fail(err)
+			// A user rejection already marked the run aborted; keep that state
+			// instead of collapsing it into a generic failure.
+			if run.State == artifact.StateAborted {
+				run.Error = err.Error()
+				_ = run.Save()
+			} else {
+				_ = run.Fail(err)
+			}
 			p.cleanup()
 		}
 	}()
@@ -273,6 +288,13 @@ func (p *Pipeline) cleanup() {
 	if err := worktree.Remove(p.Opts.Repo, p.worktreePath); err == nil {
 		_ = worktree.DeleteBranch(p.Opts.Repo, p.branch)
 		p.Gate.Info("removed worktree and branch " + p.branch)
+	}
+}
+
+// notify hands the gate a copy of the run record when it asks for one.
+func (p *Pipeline) notify() {
+	if o, ok := p.Gate.(RunObserver); ok && p.Run != nil {
+		o.RunUpdated(*p.Run)
 	}
 }
 

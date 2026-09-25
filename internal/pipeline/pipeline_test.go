@@ -189,3 +189,30 @@ func TestExecuteFixLoopThenPass(t *testing.T) {
 		t.Fatalf("iteration = %d, want 1", p.Run.Iteration)
 	}
 }
+
+type rejectPlanGate struct{ recordingGate }
+
+func (g *rejectPlanGate) PlanGate(context.Context, *contracts.Plan, string) (ui.Decision, error) {
+	return ui.Reject, nil
+}
+
+func TestRejectedPlanStaysAborted(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	factory := func(name string) (agent.Agent, error) {
+		return fakeAgent{name, agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+			return &agent.Result{Structured: planJSON(t)}, nil
+		}}, nil
+	}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: &rejectPlanGate{}, AgentFactory: factory}
+	if err := p.Execute(context.Background()); err == nil {
+		t.Fatal("expected rejection error")
+	}
+	saved, err := artifact.Load(p.Run.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.State != artifact.StateAborted || saved.Error == "" {
+		t.Fatalf("persisted state = %s (error %q), want aborted with error", saved.State, saved.Error)
+	}
+}
