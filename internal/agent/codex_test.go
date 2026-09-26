@@ -1,9 +1,52 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCodexMissingExecutable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	res, err := (Codex{}).Run(context.Background(), Request{Model: "test", Prompt: "test"})
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("expected executable lookup failure, got %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatal("a process that never started must not report success")
+	}
+}
+
+func TestCodexReportsJSONErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event string
+		exit  string
+	}{
+		{"error", `{"type":"error","message":"Invalid schema: missing changed_files"}`, "1"},
+		{"failed turn", `{"type":"turn.failed","error":{"message":"Invalid schema: missing changed_files"}}`, "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := "#!/bin/sh\nprintf '%s\\n' '" + tc.event + "'\nexit " + tc.exit + "\n"
+			if err := os.WriteFile(filepath.Join(dir, "codex"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			res, err := (Codex{}).Run(context.Background(), Request{Model: "test", Prompt: "test"})
+			if err == nil || !strings.Contains(err.Error(), "Invalid schema: missing changed_files") {
+				t.Fatalf("expected JSON error detail, got %v", err)
+			}
+			if len(res.Events) != 1 {
+				t.Fatalf("error event was not retained: %+v", res)
+			}
+		})
+	}
+}
 
 func TestCodexBuildArgs(t *testing.T) {
 	args := buildArgs(Request{

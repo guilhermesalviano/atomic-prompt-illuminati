@@ -5,6 +5,29 @@ import (
 	"testing"
 )
 
+func TestExecReportSchemaRequiresEveryProperty(t *testing.T) {
+	var schema struct {
+		Properties           map[string]json.RawMessage `json:"properties"`
+		Required             []string                   `json:"required"`
+		AdditionalProperties bool                       `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal([]byte(ExecReportSchema), &schema); err != nil {
+		t.Fatal(err)
+	}
+	required := make(map[string]bool)
+	for _, name := range schema.Required {
+		required[name] = true
+	}
+	for name := range schema.Properties {
+		if !required[name] {
+			t.Errorf("Codex strict output requires property %q in required", name)
+		}
+	}
+	if schema.AdditionalProperties {
+		t.Error("Codex strict output must forbid additional properties")
+	}
+}
+
 func TestExtractJSON(t *testing.T) {
 	cases := []struct {
 		name string

@@ -35,6 +35,8 @@ func (c Codex) Run(ctx context.Context, r Request) (*Result, error) {
 		Stderr:   proc.Stderr,
 		Duration: proc.Duration,
 	}
+	var errorDetail string
+	var turnFailed bool
 	for _, line := range strings.Split(proc.Stdout, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -42,10 +44,39 @@ func (c Codex) Run(ctx context.Context, r Request) (*Result, error) {
 		}
 		if json.Valid([]byte(line)) {
 			res.Events = append(res.Events, json.RawMessage(line))
+			var event struct {
+				Type    string `json:"type"`
+				Message string `json:"message"`
+				Error   struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if json.Unmarshal([]byte(line), &event) == nil {
+				switch event.Type {
+				case "error":
+					if event.Message != "" {
+						errorDetail = event.Message
+					}
+				case "turn.failed":
+					turnFailed = true
+					if event.Error.Message != "" {
+						errorDetail = event.Error.Message
+					}
+				}
+			}
 		}
 	}
-	if proc.Err != nil && proc.ExitCode != 0 {
-		return res, fmt.Errorf("codex exited %d: %s", proc.ExitCode, firstLine(proc.Stderr))
+	if proc.Err != nil {
+		if errorDetail == "" {
+			errorDetail = strings.TrimSpace(proc.Stderr)
+		}
+		if errorDetail != "" {
+			return res, fmt.Errorf("codex exited %d: %s: %w", proc.ExitCode, errorDetail, proc.Err)
+		}
+		return res, fmt.Errorf("codex: %w", proc.Err)
+	}
+	if turnFailed {
+		return res, fmt.Errorf("codex turn failed: %s", errorDetail)
 	}
 
 	// Preferred: the schema-validated final message written by -o.

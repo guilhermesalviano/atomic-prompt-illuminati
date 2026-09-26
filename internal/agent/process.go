@@ -70,6 +70,7 @@ func Exec(ctx context.Context, spec ProcSpec) ProcResult {
 	errLines.Flush()
 
 	res := ProcResult{
+		ExitCode: -1, // No successful exit when the process could not start.
 		Stdout:   outBuf.String(),
 		Stderr:   errBuf.String(),
 		Duration: time.Since(start),
