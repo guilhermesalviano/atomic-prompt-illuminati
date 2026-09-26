@@ -66,6 +66,14 @@ func (a *App) answerRetry(again bool) {
 	if e == nil || e.Gate == nil || e.Gate.kind != gateRetry || e.Gate.retryReply == nil {
 		return
 	}
+	// Retrying clears the failed card immediately so the flow shows the step
+	// restarting instead of staying red until the next stage event lands.
+	if again {
+		if k, ok := stageForStep(e.Gate.step); ok {
+			si := e.Stages[k]
+			si.failed, si.done, si.status = false, false, "retrying…"
+		}
+	}
 	e.Gate.retryReply <- again
 	e.Gate = nil
 	e.touch()

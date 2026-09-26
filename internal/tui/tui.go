@@ -63,6 +63,10 @@ type App struct {
 	// A failed resolution blocks the run and explains itself via notice.
 	PlanFromPrompt func(prompt string) (*contracts.Plan, string, error)
 
+	// OnRetry resumes a finished, failed run in its existing worktree at the
+	// given stage and must call Session.Finish when done.
+	OnRetry func(s *Session, run *artifact.Run, from agent.Kind, choices models.Choices)
+
 	cfg         *config.Config
 	entries     []*Entry
 	cursor      int
@@ -686,6 +690,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if t.req.diff != "" {
 					e.Diff = t.req.diff
 				}
+			case gateRetry:
+				if k, ok := stageForStep(t.req.step); ok {
+					si := e.Stages[k]
+					si.failed, si.done = true, false
+					if strings.TrimSpace(si.status) == "" {
+						si.status = t.req.step + " failed"
+					}
+				}
 			}
 			e.touch()
 		})
@@ -946,6 +958,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.asideScroll = min(a.asideScroll+max(1, a.asideH/2), a.asideMax)
 	case "[":
 		a.asideScroll = max(a.asideScroll-max(1, a.asideH/2), 0)
+	case "t":
+		return a, a.retryRun()
 	case "x", "delete":
 		a.askDelete()
 	case "a":
@@ -1105,6 +1119,78 @@ func (a *App) startRun(name, prompt string) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+// retryRun resumes the selected failed run at the stage the active tab shows:
+// plan → planner, review → reviewer, diff → executor, activity → the stage
+// that failed. Earlier stages' results are reused.
+func (a *App) retryRun() tea.Cmd {
+	e := a.current()
+	switch {
+	case e == nil || e.Live || e.deleting || e.publishing:
+		return nil
+	case e.State != artifact.StateFailed && e.State != artifact.StateAborted:
+		a.notice = "only failed runs can be retried"
+		return nil
+	case e.Run == nil:
+		a.notice = "this run never started; submit it again"
+		return nil
+	case a.OnRetry == nil:
+		return nil
+	}
+	if _, err := os.Stat(e.Run.Worktree); err != nil {
+		a.notice = "can't retry: the run's worktree is gone"
+		return nil
+	}
+	from := retryStage(a.tab, e)
+	if from != agent.Planner {
+		if _, err := e.Run.Read("plan.json"); err != nil {
+			from = agent.Planner
+		}
+	}
+	for _, k := range stageOrder {
+		si := e.Stages[k]
+		switch {
+		case stageIndex(k) < stageIndex(from):
+			*si = StageInfo{done: true, status: si.status}
+		case k == from:
+			*si = StageInfo{status: "retrying…"}
+		default:
+			*si = StageInfo{}
+		}
+	}
+	s := &Session{entry: e, app: a, publish: make(chan publishRequest, 1), done: make(chan struct{})}
+	e.Session = s
+	e.Live, e.Gate, e.ErrText = true, nil, ""
+	e.Ended = time.Time{}
+	e.push(logLine{level: levelStage, text: "retrying from " + string(from)})
+	e.touch()
+	// The current picker selection applies, so a failing model can be
+	// swapped (m) before retrying.
+	e.Models = a.choices
+	run, choices := e.Run, a.choices
+	return func() tea.Msg {
+		a.OnRetry(s, run, from, choices)
+		return nil
+	}
+}
+
+// retryStage picks the stage a retry resumes at for the active tab.
+func retryStage(t tab, e *Entry) agent.Kind {
+	switch t {
+	case tabPlan:
+		return agent.Planner
+	case tabReview:
+		return agent.Reviewer
+	case tabDiff:
+		return agent.Executor
+	}
+	for _, k := range stageOrder {
+		if e.Stages[k].failed {
+			return k
+		}
+	}
+	return e.reachedStage()
 }
 
 func (a *App) move(delta int) {
@@ -1298,6 +1384,20 @@ func stateFromStage(k agent.Kind, cur artifact.State) artifact.State {
 		return artifact.StateReviewing
 	}
 	return cur
+}
+
+// stageForStep maps a retry gate's step label to the pipeline stage it belongs
+// to, so the flow card can show the failure and refresh on retry.
+func stageForStep(step string) (agent.Kind, bool) {
+	switch strings.ToLower(strings.TrimSpace(step)) {
+	case "planner":
+		return agent.Planner, true
+	case "executor":
+		return agent.Executor, true
+	case "reviewer", "review fixes":
+		return agent.Reviewer, true
+	}
+	return "", false
 }
 
 func applyStage(e *Entry, k agent.Kind, text string) {

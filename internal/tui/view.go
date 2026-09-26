@@ -305,6 +305,11 @@ func (a *App) renderMain(w, h int) string {
 		return panel("PIPELINE", a.welcome(inner, rows), w, h, cFaint)
 	}
 
+	gate := []string(nil)
+	if e.Gate != nil {
+		gate = a.renderGate(e, inner)
+	}
+
 	var top []string
 	for i, l := range wrap(strings.Join(strings.Fields(e.Prompt), " "), inner) {
 		if i == 2 {
@@ -314,10 +319,8 @@ func (a *App) renderMain(w, h int) string {
 		top = append(top, boldStyle.Render(l))
 	}
 	top = append(top, a.metaLine(e, inner), "")
-	top = append(top, strings.Split(a.renderFlow(e, inner), "\n")...)
-	top = append(top, "")
-	if e.Gate != nil {
-		top = append(top, a.renderGate(e, inner)...)
+	if len(gate) > 0 {
+		top = append(top, gate...)
 		top = append(top, "")
 	}
 	if e.ErrText != "" {
@@ -335,26 +338,13 @@ func (a *App) renderMain(w, h int) string {
 		top = append(top, "")
 	}
 
-	if w < 80 || len(top) > rows-4 {
-		// Reserve space for the selected tab; large cards must not push the
-		// review, diff, or gate controls below a phone-sized viewport.
-		gate := []string(nil)
-		if e.Gate != nil {
-			gate = a.renderGate(e, inner)
-		}
-		top = []string{boldStyle.Render(truncate(strings.Join(strings.Fields(e.Prompt), " "), inner)), a.metaLine(e, inner)}
-		if rows-len(top)-len(gate)-4 >= len(stageOrder) {
-			for _, k := range stageOrder {
-				glyph, word, col := a.stageStatus(e.Stages[k], e.Live)
-				top = append(top, truncate(lipgloss.NewStyle().Foreground(roleColor[k]).Render(strings.ToUpper(string(k)))+" "+lipgloss.NewStyle().Foreground(col).Render(glyph+" "+word)+" "+mutedStyle.Render(choiceText(a.stageChoice(e, k))), inner))
-			}
-		}
-		if e.ErrText != "" && rows-len(top)-len(gate) > 4 {
-			top = append(top, redStyle.Render(truncate(e.ErrText, inner)))
-		}
-		top = append(top, gate...)
+	// The pipeline flow is pinned to the bottom of the pane, below the tabbed
+	// content, so it stays visible while the log/plan/review scrolls above it.
+	flow := strings.Split(a.renderFlow(e, inner), "\n")
+	if w < 80 || rows-len(top)-len(flow)-2 < 1 {
+		flow = a.compactFlow(e, inner)
 	}
-	viewH := max(rows-len(top)-2, 1)
+	viewH := max(rows-len(top)-len(flow)-2, 1)
 	content := a.contentLines(e, inner)
 	maxOff := max(0, len(content)-viewH)
 	off := min(a.scroll, maxOff)
@@ -364,7 +354,12 @@ func (a *App) renderMain(w, h int) string {
 	a.lastMax, a.viewH = maxOff, viewH
 
 	lines := append(top, a.tabBar(e, inner, off, maxOff), faintStyle.Render(strings.Repeat("─", inner)))
-	lines = append(lines, content[off:min(len(content), off+viewH)]...)
+	chunk := content[off:min(len(content), off+viewH)]
+	lines = append(lines, chunk...)
+	for i := len(chunk); i < viewH; i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines, flow...)
 
 	title := "RUN " + mutedStyle.Render(truncate(e.title(), inner-8))
 	border := cFaint
@@ -372,6 +367,20 @@ func (a *App) renderMain(w, h int) string {
 		border = cAmber
 	}
 	return panel(title, lines, w, h, border)
+}
+
+// compactFlow lists the stages one per line for terminals too narrow or too
+// short for the full flow diagram.
+func (a *App) compactFlow(e *Entry, w int) []string {
+	rows := make([]string, 0, len(stageOrder))
+	for _, k := range stageOrder {
+		glyph, word, col := a.stageStatus(e.Stages[k], e.Live)
+		rows = append(rows, truncate(
+			lipgloss.NewStyle().Foreground(roleColor[k]).Render(strings.ToUpper(string(k)))+" "+
+				lipgloss.NewStyle().Foreground(col).Render(glyph+" "+word)+" "+
+				mutedStyle.Render(choiceText(a.stageChoice(e, k))), w))
+	}
+	return rows
 }
 
 func (a *App) metaLine(e *Entry, w int) string {

@@ -10,7 +10,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
 	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
 )
 
 func TestCompactDashboardFitsAndKeepsControls(t *testing.T) {
@@ -129,6 +131,78 @@ func TestGateServicesPublishWithoutLosingAnswer(t *testing.T) {
 	got, err := awaitSession(ctx, s, (<-chan bool)(answer))
 	if err != nil || !got {
 		t.Fatalf("gate: %v %v", got, err)
+	}
+}
+
+func TestRetryRefreshesFailedStage(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	e := newEntry("x", "/repo")
+	e.Stages[agent.Executor].status = "executing (iter 1)"
+	a.entries = []*Entry{e}
+	req := &gateReq{kind: gateRetry, step: "executor", retryReply: make(chan bool, 1)}
+	a.Update(gateEventMsg{entry: e, req: req})
+	if !e.Stages[agent.Executor].failed || e.Stages[agent.Executor].done {
+		t.Fatalf("retry gate should mark the executor failed: %+v", e.Stages[agent.Executor])
+	}
+	a.handleKey(key("t"))
+	if e.Gate != nil || !<-req.retryReply {
+		t.Fatal("t must retry")
+	}
+	si := e.Stages[agent.Executor]
+	if si.failed || si.done || si.status != "retrying…" {
+		t.Fatalf("retry should refresh the stage: %+v", si)
+	}
+}
+
+func TestRetryFailedRunResumesAtActiveTab(t *testing.T) {
+	cases := []struct {
+		tab  tab
+		want agent.Kind
+	}{
+		{tabReview, agent.Reviewer},
+		{tabDiff, agent.Executor},
+		{tabPlan, agent.Planner},
+		{tabActivity, agent.Reviewer}, // the stage that failed
+	}
+	for _, c := range cases {
+		a := NewApp(testConfig(), t.TempDir())
+		run := &artifact.Run{ID: "r", State: artifact.StateFailed, Dir: t.TempDir(), Worktree: t.TempDir(),
+			Error: `reviewer failed: invalid review: review.verdict "" must be one of pass|fail`}
+		if err := run.Write("plan.json", []byte(`{"summary":"s","steps":[{"description":"d"}],"acceptance_criteria":["a"]}`)); err != nil {
+			t.Fatal(err)
+		}
+		_ = run.Write("reviewer.events.0.jsonl", nil)
+		e := entryFromRun(run)
+		a.entries = []*Entry{e}
+		a.setTab(c.tab)
+		var got agent.Kind
+		a.OnRetry = func(s *Session, r *artifact.Run, from agent.Kind, _ models.Choices) {
+			if s.entry != e || r != run {
+				t.Error("retry must resume the selected run")
+			}
+			got = from
+		}
+		_, cmd := a.handleKey(key("t"))
+		if cmd == nil {
+			t.Fatalf("tab %d: t should retry the failed run (notice %q)", c.tab, a.notice)
+		}
+		cmd()
+		if got != c.want {
+			t.Errorf("tab %d: resumed at %q, want %q", c.tab, got, c.want)
+		}
+		if !e.Live || e.ErrText != "" || e.Stages[c.want].failed || e.Stages[c.want].status != "retrying…" {
+			t.Errorf("tab %d: entry not reset for retry: live=%v err=%q stage=%+v", c.tab, e.Live, e.ErrText, e.Stages[c.want])
+		}
+	}
+}
+
+func TestRetryNeedsTheWorktree(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	run := &artifact.Run{ID: "r", State: artifact.StateFailed, Dir: t.TempDir(), Worktree: "/nonexistent/wt"}
+	a.entries = []*Entry{entryFromRun(run)}
+	a.OnRetry = func(*Session, *artifact.Run, agent.Kind, models.Choices) { t.Error("must not retry") }
+	if _, cmd := a.handleKey(key("t")); cmd != nil || !strings.Contains(a.notice, "worktree is gone") {
+		t.Fatalf("expected a worktree notice, got %q", a.notice)
 	}
 }
 

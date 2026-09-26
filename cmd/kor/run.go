@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
 	"github.com/guilhermesalviano/korchestrate/internal/artifact"
 	"github.com/guilhermesalviano/korchestrate/internal/config"
 	"github.com/guilhermesalviano/korchestrate/internal/contracts"
@@ -220,6 +221,30 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 			opts.Repo = cfg.Repo
 		}
 		p := &pipeline.Pipeline{Cfg: applyChoices(cfg, choices), Opts: opts, Gate: s}
+		go func() {
+			defer wg.Done()
+			err := p.Execute(runCtx)
+			s.Finish(err, p.Run)
+		}()
+	}
+
+	app.OnRetry = func(s *tui.Session, run *artifact.Run, from agent.Kind, choices models.Choices) {
+		mu.Lock()
+		if closed {
+			mu.Unlock()
+			return
+		}
+		wg.Add(1)
+		mu.Unlock()
+
+		runCfg, err := loadRunConfig(run, "")
+		if err != nil {
+			runCfg = cfg
+		}
+		runCfg.ArtifactsDir = cfg.ArtifactsDir
+		opts := template
+		opts.Repo, opts.Prompt, opts.From = run.Repo, run.Prompt, from
+		p := &pipeline.Pipeline{Cfg: applyChoices(runCfg, choices), Opts: opts, Run: run, Gate: s}
 		go func() {
 			defer wg.Done()
 			err := p.Execute(runCtx)

@@ -471,3 +471,63 @@ func TestRejectedPlanStaysAborted(t *testing.T) {
 		t.Fatalf("persisted state = %s (error %q), want aborted with error", saved.State, saved.Error)
 	}
 }
+
+func TestFailedReviewResumesAtReviewer(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	gate := &recordingGate{}
+
+	planRuns, execRuns, reviewRuns := 0, 0, 0
+	reviewOK := false
+	factory := func(name string) (agent.Agent, error) {
+		switch name {
+		case "claude":
+			return fakeAgent{"claude", agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				planRuns++
+				return &agent.Result{Structured: planJSON(t)}, nil
+			}}, nil
+		case "codex":
+			return fakeAgent{"codex", agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				execRuns++
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"x"}`)}, nil
+			}}, nil
+		case "opencode":
+			return fakeAgent{"opencode", agent.Reviewer, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				reviewRuns++
+				if !reviewOK {
+					return &agent.Result{Structured: json.RawMessage(`{"verdict":"","summary":""}`)}, nil
+				}
+				if !strings.Contains(r.Prompt, "feature.txt") {
+					t.Error("resumed review is missing the executor's diff")
+				}
+				return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
+	}
+
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: gate, AgentFactory: factory}
+	if err := p.Execute(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid review") {
+		t.Fatalf("first run err = %v, want invalid review", err)
+	}
+	if p.Run.State != artifact.StateFailed {
+		t.Fatalf("state = %s, want failed", p.Run.State)
+	}
+	if _, err := os.Stat(filepath.Join(p.Run.Worktree, "feature.txt")); err != nil {
+		t.Fatalf("a failed run must keep its worktree for retry: %v", err)
+	}
+
+	reviewOK = true
+	planRuns, execRuns, reviewRuns = 0, 0, 0
+	retry := &Pipeline{Cfg: cfg, Run: p.Run, Opts: Options{Repo: repo, Prompt: "add feature", From: agent.Reviewer}, Gate: gate, AgentFactory: factory}
+	if err := retry.Execute(context.Background()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if planRuns != 0 || execRuns != 0 || reviewRuns != 1 {
+		t.Fatalf("retry ran plan=%d exec=%d review=%d, want 0/0/1", planRuns, execRuns, reviewRuns)
+	}
+	if retry.Run.State != artifact.StateDone || retry.Run.Error != "" {
+		t.Fatalf("state=%s error=%q, want done with no error", retry.Run.State, retry.Run.Error)
+	}
+}

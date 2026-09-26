@@ -87,6 +87,11 @@ func (c OpenCode) Run(ctx context.Context, r Request) (*Result, error) {
 	raw, err := contracts.ExtractJSON(res.Final)
 	if err != nil {
 		// Last resort: try the raw stdout (some versions print plain text).
+		// JSONL event output must not be scanned: its first event object
+		// would be mistaken for the verdict.
+		if len(res.Events) > 0 {
+			return res, fmt.Errorf("opencode: no JSON verdict in output: %w", err)
+		}
 		if raw2, err2 := contracts.ExtractJSON(proc.Stdout); err2 == nil {
 			res.Structured = raw2
 			return res, nil

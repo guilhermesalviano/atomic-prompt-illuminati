@@ -24,6 +24,7 @@ var helpGroups = []helpGroup{
 		{"↑↓  k j", "select run"},
 		{"enter", "open"},
 		{"b", "toggle worktrees"},
+		{"t", "retry failed run at tab's stage"},
 		{"x", "delete run"},
 		{"m", "provider · model · effort"},
 	}},

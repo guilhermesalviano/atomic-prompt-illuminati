@@ -30,7 +30,11 @@ type Options struct {
 	// uses the current checkout directly. Other names create an isolated
 	// worktree; existing names offer reuse or a suffixed new branch.
 	// Resumed runs keep their recorded checkout.
-	Name         string
+	Name string
+	// From resumes an existing Run at this stage instead of planning again.
+	// Executor and Reviewer reuse the run's recorded plan.json; Reviewer
+	// reviews the worktree's current changes before any new execution.
+	From         agent.Kind
 	AllowDirty   bool
 	KeepWorktree bool
 	// Apply leaves the worktree in place and, when the remote supports it, is
@@ -71,8 +75,9 @@ func (p *Pipeline) agentFor(name string) (agent.Agent, error) {
 	return adapterFor(name)
 }
 
-// Execute runs the full pipeline. On failure the worktree is cleaned up unless
-// KeepWorktree is set; on success the worktree and branch are retained.
+// Execute runs the full pipeline. A failed run keeps its worktree so it can be
+// retried; an aborted run is cleaned up unless KeepWorktree is set. On success
+// the worktree and branch are retained.
 func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	checks := preflight.Checks(p.Opts.Repo,
 		p.Cfg.Models.Planner.Agent, p.Cfg.Models.Executor.Agent, p.Cfg.Models.Reviewer.Agent)
@@ -151,6 +156,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 	run.Branch = p.branch
 	run.Worktree = p.worktreePath
+	run.Error = ""
 	if err := run.Save(); err != nil {
 		return err
 	}
@@ -173,6 +179,8 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 				_ = run.Save()
 			} else {
 				_ = run.Fail(err)
+				// The work done so far is what a retry resumes from.
+				p.Opts.KeepWorktree = true
 			}
 			p.cleanup()
 		}
@@ -231,7 +239,22 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 
 	// --- PLAN -------------------------------------------------------------
 	var plan *contracts.Plan
-	if p.Opts.Plan != nil {
+	resumed := !created && (p.Opts.From == agent.Executor || p.Opts.From == agent.Reviewer)
+	if resumed && p.Opts.Plan == nil {
+		data, rerr := run.Read("plan.json")
+		if rerr != nil {
+			return fmt.Errorf("cannot resume at %s without the run's plan: %w", p.Opts.From, rerr)
+		}
+		var saved contracts.Plan
+		if err := json.Unmarshal(data, &saved); err != nil {
+			return fmt.Errorf("decode plan.json: %w", err)
+		}
+		p.Opts.Plan = &saved
+	}
+	if resumed {
+		plan = p.Opts.Plan
+		p.Gate.Info("resuming at " + string(p.Opts.From) + " with the recorded plan")
+	} else if p.Opts.Plan != nil {
 		plan = p.Opts.Plan
 		p.Gate.Info("using provided plan; skipping planner")
 	} else {
@@ -246,7 +269,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StateGatePlan); err != nil {
 		return err
 	}
-	if p.Cfg.Gates.AfterPlan {
+	if p.Cfg.Gates.AfterPlan && !resumed {
 		p.Gate.Stage(agent.Planner, "awaiting plan approval")
 		decision, gerr := p.Gate.PlanGate(ctx, plan, "")
 		if gerr != nil {
@@ -262,10 +285,16 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	// --- EXECUTE / REVIEW LOOP -------------------------------------------
 	var fix string
 	passed := false
-	for iter := 0; ; iter++ {
+	start := 0
+	if resumed {
+		start = run.Iteration
+	}
+	skipExec := resumed && p.Opts.From == agent.Reviewer
+	for iter := start; ; iter++ {
 		run.Iteration = iter
 		var nextFix string
-		passed, nextFix, err = p.cycle(ctx, plan, iter, fix)
+		passed, nextFix, err = p.cycle(ctx, plan, iter, fix, skipExec)
+		skipExec = false
 		if err != nil {
 			return err
 		}
@@ -349,20 +378,28 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 
 // cycle runs one executor+reviewer pass. It returns whether the review passed
 // and, when it did not, the fix instructions for the next iteration.
-func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fix string) (bool, string, error) {
-	report, err := retryStep(ctx, p, "executor", func() (*contracts.ExecReport, error) {
-		report, execErr := p.execute(ctx, plan, iter, fix)
-		if stageErr := worktree.Stage(p.worktreePath); stageErr != nil && execErr == nil {
-			return report, stageErr
+// skipExec reviews the worktree as it stands, which is how a failed review is
+// retried without redoing the execution.
+func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fix string, skipExec bool) (bool, string, error) {
+	if skipExec {
+		if err := worktree.Stage(p.worktreePath); err != nil {
+			return false, "", err
 		}
-		return report, execErr
-	})
-	if err != nil {
-		return false, "", err
-	}
-	if report != nil {
-		data, _ := json.MarshalIndent(report, "", "  ")
-		_ = p.Run.Write(fmt.Sprintf("executor.report.%d.json", iter), data)
+	} else {
+		report, err := retryStep(ctx, p, "executor", func() (*contracts.ExecReport, error) {
+			report, execErr := p.execute(ctx, plan, iter, fix)
+			if stageErr := worktree.Stage(p.worktreePath); stageErr != nil && execErr == nil {
+				return report, stageErr
+			}
+			return report, execErr
+		})
+		if err != nil {
+			return false, "", err
+		}
+		if report != nil {
+			data, _ := json.MarshalIndent(report, "", "  ")
+			_ = p.Run.Write(fmt.Sprintf("executor.report.%d.json", iter), data)
+		}
 	}
 
 	diff, err := worktree.Diff(p.worktreePath)

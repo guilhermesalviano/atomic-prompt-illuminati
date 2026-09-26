@@ -352,6 +352,34 @@ func TestHelpOverlayShowsAllHintsAndFits(t *testing.T) {
 	}
 }
 
+func TestPipelineFlowPinnedToBottom(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	a.width, a.height = 200, 40
+	e := newEntry("x", "/repo")
+	e.Stages[agent.Planner].done = true
+	e.Stages[agent.Executor].status = "executing iteration 1 with gpt-6"
+	a.entries = []*Entry{e}
+	for i := 0; i < 30; i++ {
+		e.push(logLine{text: "log line"})
+	}
+	lines := strings.Split(a.View(), "\n")
+	planner, log := -1, -1
+	for i, l := range lines {
+		if strings.Contains(l, "PLANNER") {
+			planner = i
+		}
+		if log == -1 && strings.Contains(l, "log line") {
+			log = i
+		}
+	}
+	if planner < 0 || log < 0 || planner <= log {
+		t.Fatalf("pipeline should sit below the content: planner=%d log=%d", planner, log)
+	}
+	if planner < len(lines)/2 {
+		t.Fatalf("pipeline should be pinned near the bottom: line %d of %d", planner, len(lines))
+	}
+}
+
 func TestLiveDiffIgnoredAfterFinish(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
 	e := newEntry("x", "/repo")
