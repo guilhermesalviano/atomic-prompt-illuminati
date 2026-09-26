@@ -145,6 +145,34 @@ func TestCurrentBranch(t *testing.T) {
 	}
 }
 
+func TestCheckoutLock(t *testing.T) {
+	repo := setupRepo(t)
+	unlock, err := LockCheckout(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	if second, err := LockCheckout(repo); err == nil {
+		second()
+		t.Fatal("concurrent checkout lock succeeded")
+	}
+	linked := filepath.Join(t.TempDir(), "linked")
+	if err := Add(repo, linked, "linked", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := LockCheckout(linked)
+	if err != nil {
+		t.Fatal("independent worktree was blocked:", err)
+	}
+	other()
+	unlock()
+	again, err := LockCheckout(repo)
+	if err != nil {
+		t.Fatal("lock was not released:", err)
+	}
+	again()
+}
+
 func TestSnapshotIncludesUntrackedWithoutStaging(t *testing.T) {
 	repo := setupRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {

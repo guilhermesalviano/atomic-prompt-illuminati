@@ -215,9 +215,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 		opts := template
 		opts.Prompt = prompt
 		opts.Plan = plan
-		if name != "" {
-			opts.Name = name
-		}
+		opts.Name = name
 		if opts.Repo == "" {
 			opts.Repo = cfg.Repo
 		}

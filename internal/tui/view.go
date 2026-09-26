@@ -22,6 +22,9 @@ const (
 // View implements tea.Model.
 func (a *App) View() string {
 	w, h := max(a.width, 1), max(a.height, 1)
+	if w < 12 || h < 8 {
+		return fitView("Enlarge terminal", w, h)
+	}
 
 	if a.setup.active {
 		return fitView(a.renderSetup(w, h), w, h)
@@ -339,7 +342,7 @@ func (a *App) renderMain(w, h int) string {
 		if rows-len(top)-len(gate)-4 >= len(stageOrder) {
 			for _, k := range stageOrder {
 				glyph, word, col := a.stageStatus(e.Stages[k], e.Live)
-				top = append(top, truncate(lipgloss.NewStyle().Foreground(roleColor[k]).Render(strings.ToUpper(string(k)))+" "+lipgloss.NewStyle().Foreground(col).Render(glyph+" "+word), inner))
+				top = append(top, truncate(lipgloss.NewStyle().Foreground(roleColor[k]).Render(strings.ToUpper(string(k)))+" "+lipgloss.NewStyle().Foreground(col).Render(glyph+" "+word)+" "+mutedStyle.Render(choiceText(a.stageChoice(e, k))), inner))
 			}
 		}
 		if e.ErrText != "" && rows-len(top)-len(gate) > 4 {
@@ -773,7 +776,7 @@ func (a *App) renderFooter(w int) string {
 	e := a.current()
 	switch {
 	case a.showSidebar && w < 80 && !a.inputFocus:
-		hints = []string{keyHint("↑↓", "select"), keyHint("enter", "open"), keyHint("b/esc", "close"), keyHint("q", "quit")}
+		hints = []string{keyHint("↑↓", "select"), keyHint("enter", "open"), keyHint("b/esc", "close"), keyHint("p", "commit+push"), keyHint("q", "quit")}
 	case a.inputFocus:
 		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("esc", "back"), keyHint("ctrl+p", "push"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear")}
 	case e != nil && e.Gate != nil:

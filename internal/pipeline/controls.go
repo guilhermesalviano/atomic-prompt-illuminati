@@ -24,6 +24,7 @@ func retryStep[T any](ctx context.Context, p *Pipeline, step string, fn func() (
 		if !ok {
 			return value, err
 		}
+		p.Gate.Info(step + " failed: " + err.Error())
 		again, gateErr := gate.RetryGate(ctx, step, err)
 		if gateErr != nil {
 			return value, gateErr

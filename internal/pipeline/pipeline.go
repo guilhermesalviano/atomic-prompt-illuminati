@@ -94,7 +94,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	if !clean && !p.Opts.AllowDirty {
+	if !clean && !p.Opts.AllowDirty && p.Run == nil {
 		return fmt.Errorf("repository %s has uncommitted changes; commit them or pass --allow-dirty", p.Opts.Repo)
 	}
 
@@ -160,7 +160,11 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	p.Gate.Info("run " + run.ID + " -> " + run.Dir)
 	p.notify()
 
+	var unlock func()
 	defer func() {
+		if unlock != nil {
+			defer unlock()
+		}
 		if err != nil {
 			// A user rejection already marked the run aborted; keep that state
 			// instead of collapsing it into a generic failure.
@@ -209,13 +213,12 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			p.Gate.Info("worktree " + p.worktreePath + " on " + p.branch)
 		}
 	}
-	unlock, err := worktree.LockCheckout(p.worktreePath)
+	unlock, err = worktree.LockCheckout(p.worktreePath)
 	if err != nil {
 		// A checkout another run is using must not be cleaned up.
 		p.reused = true
 		return err
 	}
-	defer unlock()
 	if gate, ok := p.Gate.(publishControls); ok {
 		gate.SetPublishHandler(func() error {
 			// Once the user publishes, failure cleanup must preserve the commit.
@@ -259,7 +262,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	// --- EXECUTE / REVIEW LOOP -------------------------------------------
 	var fix string
 	passed := false
-	for iter := 0; iter <= p.Cfg.Loop.MaxIterations; iter++ {
+	for iter := 0; ; iter++ {
 		run.Iteration = iter
 		var nextFix string
 		passed, nextFix, err = p.cycle(ctx, plan, iter, fix)
@@ -270,9 +273,20 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			break
 		}
 		fix = nextFix
-	}
-	if !passed {
-		return fmt.Errorf("review did not pass within %d iteration(s)", p.Cfg.Loop.MaxIterations+1)
+		if iter >= p.Cfg.Loop.MaxIterations {
+			cause := fmt.Errorf("review did not pass within %d iteration(s)", iter+1)
+			gate, ok := p.Gate.(retryGate)
+			if !ok {
+				return cause
+			}
+			again, gateErr := gate.RetryGate(ctx, "review fixes", cause)
+			if gateErr != nil {
+				return gateErr
+			}
+			if !again {
+				return cause
+			}
+		}
 	}
 
 	// --- FINALIZE ---------------------------------------------------------
@@ -289,7 +303,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		return err
 	}
 	if decision == ui.CommitStop {
-		p.Gate.Info("changes staged on " + p.branch + "; not committed")
+		p.Gate.Info("leaving remaining changes staged on " + p.branch)
 		if err := run.SetState(artifact.StateDone); err != nil {
 			return err
 		}
@@ -319,7 +333,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			return true, worktree.Push(p.worktreePath, p.branch)
 		}); err != nil {
 			p.Gate.Info("warning: push failed: " + err.Error())
-			p.Gate.Info("commit is safe on " + p.branch + "; push it manually")
+			p.Gate.Info("commit is safe on " + p.branch + "; press p in the dashboard to retry")
 		} else {
 			run.Pushed = true
 			p.Gate.Info("pushed " + p.branch + " to origin")
@@ -328,7 +342,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StateDone); err != nil {
 		return err
 	}
-	p.Gate.Info("done; branch " + p.branch + " at " + shortSHA(commit))
+	p.Gate.Info("done; branch " + p.branch + " at " + shortSHA(run.Commit))
 	p.Gate.Info("worktree retained at " + p.worktreePath)
 	return nil
 }
@@ -395,9 +409,6 @@ func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fi
 	}
 
 	p.Gate.Stage(agent.Reviewer, "review failed")
-	if iter >= p.Cfg.Loop.MaxIterations {
-		return false, "", fmt.Errorf("review failed after %d iteration(s): %s", iter+1, review.Summary)
-	}
 	if p.Cfg.Gates.AfterReview {
 		decision, err := p.Gate.ReviewGate(ctx, review, diff)
 		if err != nil {

@@ -229,7 +229,7 @@ func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed strin
 }
 
 // WorktreeGate asks whether to reuse an existing worktree/branch or create a
-// new one; it is the first decision point of a run started without a name.
+// new one when the requested branch name is taken.
 func (s *Session) WorktreeGate(ctx context.Context, branch string) (ui.WorktreeDecision, error) {
 	req := &gateReq{
 		kind:          gateWorktree,
@@ -832,6 +832,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if a.showSidebar && a.width < 80 {
 		switch msg.String() {
+		case "p", "ctrl+p":
+			return a, a.requestPublish()
 		case "up", "k":
 			a.move(-1)
 		case "down", "j":
@@ -851,6 +853,34 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, a.requestPublish()
 	}
 	if e := a.current(); e != nil && e.Gate != nil {
+		// Waiting for a decision must not prevent inspecting or scrolling
+		// the selected run. Agent selection keeps its own tab/number keys.
+		switch msg.String() {
+		case "d":
+			a.setTab(tabDiff)
+			return a, nil
+		case "pgdown", "ctrl+d", "J", "shift+down":
+			a.scrollBy(max(1, a.viewH/2))
+			return a, nil
+		case "pgup", "ctrl+u", "K", "shift+up":
+			a.scrollBy(-max(1, a.viewH/2))
+			return a, nil
+		case "tab", "right", "l":
+			if e.Gate.kind != gateAgent {
+				a.setTab((a.tab + 1) % tabCount)
+				return a, nil
+			}
+		case "shift+tab", "left", "h":
+			if e.Gate.kind != gateAgent {
+				a.setTab((a.tab + tabCount - 1) % tabCount)
+				return a, nil
+			}
+		case "1", "2", "3", "4":
+			if e.Gate.kind != gateAgent {
+				a.setTab(tab(msg.String()[0] - '1'))
+				return a, nil
+			}
+		}
 		switch e.Gate.kind {
 		case gateRetry:
 			switch msg.String() {

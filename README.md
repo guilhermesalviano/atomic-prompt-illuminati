@@ -39,6 +39,12 @@ list. On narrow terminals it opens at full width: use `↑↓` to select a run a
 `enter` to open it, or `b`/`esc` to close the list. Use `tab` or `1`–`4` for
 Activity, Plan, Review, and Diff; `n` starts a prompt and `m` opens model selection.
 
+Executor changes are staged before review. Press `p` to commit and push the
+selected run, including after a run finishes, or `ctrl+p` while typing a prompt.
+During an active agent step, publishing waits until that step yields. A failed
+push keeps the commit; press `p` again to retry. When a step fails, press `t` to
+retry that step without restarting earlier stages, or choose another agent.
+
 ## Commands
 
 | Command | Description |

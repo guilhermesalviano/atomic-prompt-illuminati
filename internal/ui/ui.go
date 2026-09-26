@@ -101,7 +101,8 @@ type Gate interface {
 	WorktreeGate(ctx context.Context, branch string) (WorktreeDecision, error)
 	// SelectAgent asks the user to pick a replacement adapter after `failed`
 	// could not run a stage. options lists the adapters still untried and
-	// preferred hints at the configured fallback. It returns "" to give up.
+	// preferred hints at the configured fallback. It returns "retry" to use
+	// the same agent/model again, or "" to stop choosing replacements.
 	SelectAgent(ctx context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error)
 	// Close releases terminal resources.
 	Close()
