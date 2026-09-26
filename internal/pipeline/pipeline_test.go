@@ -251,19 +251,45 @@ func TestExecutorFallsBackOnFailure(t *testing.T) {
 	}
 }
 
-func TestMissingWorktreeNameIsRejected(t *testing.T) {
+func TestDefaultBranchFromCurrentBranch(t *testing.T) {
 	repo := setupRepo(t)
 	cfg := baseConfig(t, repo)
 	gate := &recordingGate{}
 	factory := func(name string) (agent.Agent, error) {
-		return fakeAgent{name, agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
-			return &agent.Result{Structured: planJSON(t)}, nil
-		}}, nil
+		switch name {
+		case "claude":
+			return fakeAgent{name, agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: planJSON(t)}, nil
+			}}, nil
+		case "codex":
+			return fakeAgent{name, agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"x"}`)}, nil
+			}}, nil
+		case "opencode":
+			return fakeAgent{name, agent.Reviewer, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
 	}
+
+	// First run without a name lands on api/main (setupRepo inits with -b main).
 	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
-	err := p.Execute(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "worktree name is required") {
-		t.Fatalf("err = %v, want missing worktree name", err)
+	if err := p.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if p.Run.Branch != "api/main" {
+		t.Fatalf("branch = %q, want api/main", p.Run.Branch)
+	}
+
+	// A second nameless run must not collide: api/main is kept on success.
+	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature again"}, Gate: gate, AgentFactory: factory}
+	if err := p2.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if p2.Run.Branch != "api/main-2" {
+		t.Fatalf("branch = %q, want api/main-2", p2.Run.Branch)
 	}
 }
 

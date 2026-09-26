@@ -21,9 +21,11 @@ import (
 type Options struct {
 	Repo   string
 	Prompt string
-	// Name is the required worktree/branch name for a new run. The branch is
-	// created with this name verbatim. It is ignored when resuming a run, whose
-	// branch is already recorded.
+	// Name is the optional worktree/branch name for a new run. When set, the
+	// branch is created with this name verbatim. When empty, the branch
+	// defaults to api/<current-branch> (e.g. api/main), suffixed -2, -3, ...
+	// while taken. It is ignored when resuming a run, whose branch is already
+	// recorded.
 	Name         string
 	AllowDirty   bool
 	KeepWorktree bool
@@ -101,8 +103,10 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 	p.Run = run
 	if created {
-		if err := worktree.ValidBranch(p.Opts.Repo, p.Opts.Name); err != nil {
-			return err
+		if name := strings.TrimSpace(p.Opts.Name); name != "" {
+			if err := worktree.ValidBranch(p.Opts.Repo, name); err != nil {
+				return err
+			}
 		}
 	}
 	p.branch = run.Branch
@@ -111,7 +115,12 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		if name := strings.TrimSpace(p.Opts.Name); name != "" {
 			p.branch = name
 		} else {
-			p.branch = "api/" + run.ID
+			var derr error
+			p.branch, derr = p.defaultBranch(run.ID)
+			if derr != nil {
+				return derr
+			}
+			p.Gate.Info("no worktree name given; using branch " + p.branch)
 		}
 	}
 	if p.worktreePath == "" {
@@ -324,6 +333,29 @@ func (p *Pipeline) fixInstruction(review *contracts.Review) string {
 		return lines
 	}
 	return review.Summary
+}
+
+// defaultBranch derives a branch name for runs started without an explicit
+// worktree name: api/<current-branch> (e.g. api/main), with a -2, -3, ...
+// suffix while that name is already taken. A detached HEAD falls back to the
+// run ID, which is unique by construction.
+func (p *Pipeline) defaultBranch(runID string) (string, error) {
+	cur, err := worktree.CurrentBranch(p.Opts.Repo)
+	if err != nil {
+		return "", err
+	}
+	if cur == "" || cur == "HEAD" {
+		return "api/" + runID, nil
+	}
+	base := "api/" + cur
+	if err := worktree.ValidBranch(p.Opts.Repo, base); err != nil {
+		base = "api/" + artifact.Slug(cur, 40)
+	}
+	branch := base
+	for i := 2; worktree.BranchExists(p.Opts.Repo, branch); i++ {
+		branch = fmt.Sprintf("%s-%d", base, i)
+	}
+	return branch, nil
 }
 
 // cleanup removes the worktree and branch after a failed or aborted run.

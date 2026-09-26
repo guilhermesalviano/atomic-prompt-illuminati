@@ -59,8 +59,19 @@ func Add(repo, path, branch, base string) error {
 	return err
 }
 
+// CurrentBranch returns the branch checked out in repo. It returns "HEAD" when
+// the repo is in a detached-HEAD state.
+func CurrentBranch(repo string) (string, error) {
+	out, err := git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // ValidBranch reports whether name can be used as a new branch name. An empty
-// name is rejected because the worktree name is required to start a run.
+// name is rejected; callers that allow a derived default handle that case
+// before calling this.
 func ValidBranch(repo, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {

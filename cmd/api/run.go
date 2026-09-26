@@ -80,7 +80,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (required)")
+	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to api/<current-branch>)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
@@ -90,7 +90,6 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	cmd.Flags().StringVar(&plannerModel, "planner-model", "", "override the planner model")
 	cmd.Flags().StringVar(&executorModel, "executor-model", "", "override the executor model")
 	cmd.Flags().StringVar(&reviewerModel, "reviewer-model", "", "override the reviewer model")
-	_ = cmd.MarkFlagRequired("name")
 	return cmd
 }
 

@@ -103,6 +103,17 @@ func TestHeadAndClean(t *testing.T) {
 	}
 }
 
+func TestCurrentBranch(t *testing.T) {
+	repo := setupRepo(t)
+	branch, err := CurrentBranch(repo)
+	if err != nil || branch != "main" {
+		t.Fatalf("branch=%q err=%v, want main", branch, err)
+	}
+	if err := ValidBranch(repo, ""); err == nil {
+		t.Fatal("empty branch name should be rejected")
+	}
+}
+
 func TestSnapshotIncludesUntrackedWithoutStaging(t *testing.T) {
 	repo := setupRepo(t)
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644); err != nil {
