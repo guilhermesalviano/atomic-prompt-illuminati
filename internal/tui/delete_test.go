@@ -106,11 +106,11 @@ func TestSidebarShowsKoalaWhenItFits(t *testing.T) {
 	a, _ := finishedApp(t)
 	a.showSidebar = true
 	a.width, a.height = 120, 40
-	if !strings.Contains(a.View(), "▄█▄") {
+	if !strings.Contains(a.View(), "███▀█") {
 		t.Fatalf("a tall sidebar should show the koala:\n%s", a.View())
 	}
 	a.height = 16
-	if strings.Contains(a.View(), "▄█▄") {
+	if strings.Contains(a.View(), "███▀█") {
 		t.Fatalf("a short sidebar should give its rows to the list:\n%s", a.View())
 	}
 }

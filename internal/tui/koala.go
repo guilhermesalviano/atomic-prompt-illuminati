@@ -21,20 +21,51 @@ const (
 )
 
 const (
-	koalaW   = 17 // sprite width in cells
-	koalaGap = 4  // cells between the sprite and its bubble
-	koalaH   = 8  // sprite height in rows, including the bob gap
+	koalaW   = 18 // sprite width in cells
+	koalaGap = 2  // cells between the sprite and its bubble; holds the z's
+	koalaH   = 10 // sprite height in rows
 )
 
-var (
-	cFur  = lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}
-	cNose = lipgloss.AdaptiveColor{Light: "#111827", Dark: "#4B5563"}
+// koalaSprite is the mascot as pixel art: a koala hugging a eucalyptus
+// trunk. One character is one pixel and two pixel rows share a terminal row
+// through half blocks, so pixels come out roughly square. The eye is always
+// 'E', plus 'c' when closed (a dash) or 'o' when open (a tall dot).
+var koalaSprite = [2 * koalaH]string{
+	"....KTLTK.........",
+	"....KTLBK....KKKK.",
+	"....KBLTK...KGWWGK",
+	"KK..KTLTKKKKKWWWGK",
+	"KTK.KTBTKGGGKWWGGK",
+	"KTTKKTLTKGGGGKGGGK",
+	".KTTTTLTKKKGGGKKK.",
+	"...KKTLTKNNGGoGGK.",
+	"....KTBTKNNGGEcGK.",
+	"..KKKTLTKNNGGGGGK.",
+	".KGGGGGTKWWWGGGGK.",
+	".KGKGKKKKKKKKKGGGK",
+	"...KGGGGGGGGGGGGGK",
+	"...KGKGKGGGGGGGGGK",
+	"...KKKKKKKKKKKGGGK",
+	"....KTLTKDGGGGGGGK",
+	"....KTBTKKDGGGGGGK",
+	"....KBLKGGKDGGGGGK",
+	"....KTKGKGKDGGGGK.",
+	"....KTKKKKKKKKKK..",
+}
 
-	furStyle  = lipgloss.NewStyle().Foreground(cFur)
-	noseStyle = lipgloss.NewStyle().Foreground(cNose)
-)
+// koalaPalette colors the sprite's pixels; anything missing is transparent.
+var koalaPalette = map[byte]lipgloss.Color{
+	'K': "#1A1A1A", // outline
+	'G': "#A8A8AA", // fur
+	'D': "#808084", // fur in shadow
+	'W': "#F2F2F2", // inner ear and chin
+	'N': "#6E3A1E", // nose
+	'T': "#A0623A", // bark
+	'L': "#BA7C4C", // bark highlight
+	'B': "#7A4526", // bark groove
+}
 
-// moodColor is the accent for eyes, prop and bubble: the stage's role color.
+// moodColor is the accent for the sparkle and bubble: the stage's role color.
 func moodColor(m mood) lipgloss.AdaptiveColor {
 	switch m {
 	case moodPlan:
@@ -59,59 +90,9 @@ func moodColor(m mood) lipgloss.AdaptiveColor {
 // width so the block can be centered line by line.
 func koala(m mood, f int, caption string, bubbleW int) []string {
 	acc := lipgloss.NewStyle().Foreground(moodColor(m))
-
-	// Eyes: 7 cells between the cheeks. Pupils drift for "looking around".
-	eyes := func(glyph string, look int) string {
-		return strings.Repeat(" ", look) + glyph + "   " + glyph + strings.Repeat(" ", 2-look)
-	}
-	blink := f%32 >= 30
-	var eye, mouth string
-	switch m {
-	case moodSleep:
-		eye, mouth = eyes("-", 1), " ~ "
-	case moodPlan:
-		eye, mouth = eyes("o", []int{0, 1, 2, 1}[f/8%4]), " o "
-	case moodExec:
-		eye, mouth = eyes("•", 1), []string{" - ", " w "}[f/3%2]
-	case moodReview:
-		eye, mouth = "[o]-[o]", " - " // reading glasses
-		if f/6%2 == 1 {
-			eye = "[•]-[•]"
-		}
-	case moodGate:
-		eye, mouth = eyes("O", 1), " o "
-	case moodDone:
-		eye, mouth = eyes("^", 1), "\\_/"
-		blink = false
-	case moodFail:
-		eye, mouth = eyes("╥", 1), "/-\\"
-		blink = false
-	}
-	if blink && m != moodSleep && m != moodReview {
-		eye = eyes("-", 1)
-	}
-
-	paw := "   "
-	if m == moodGate {
-		paw = []string{" \\o", " -o"}[f/3%2]
-	}
-
-	rows := []string{
-		furStyle.Render(" ,--.       ,--. ") + acc.Render(koalaSparkle(m, f)),
-		furStyle.Render("( (  `-----'  ) )") + acc.Bold(true).Render(paw),
-		furStyle.Render(" `-/ ") + acc.Bold(true).Render(eye) + furStyle.Render(" \\-' "),
-		furStyle.Render("   |   ") + noseStyle.Render("▄█▄") + furStyle.Render("   |   "),
-		furStyle.Render("   \\   ") + textStyle.Render(mouth) + furStyle.Render("   /   "),
-		furStyle.Render("    `-.___.-'    "),
-		koalaProp(m, f, acc),
-	}
-
-	// Bob the head while typing and bounce when done.
-	if (m == moodExec && f/3%2 == 0) || (m == moodDone && f/4%2 == 0) {
-		rows = append([]string{""}, rows...)
-	} else {
-		rows = append(rows, "")
-	}
+	// Napping, content or sad koalas keep their eyes shut, like the sleepy
+	// original; the others are awake and blink now and then.
+	closed := m == moodSleep || m == moodDone || m == moodFail || f%32 >= 30
 
 	var side []string
 	width := koalaW + koalaGap
@@ -121,7 +102,10 @@ func koala(m mood, f int, caption string, bubbleW int) []string {
 	}
 	out := make([]string, koalaH)
 	for i := range out {
-		r := rows[i]
+		r := koalaRow(koalaSprite[2*i], koalaSprite[2*i+1], closed)
+		if s := koalaSparkle(m, f, i); s != "" {
+			r += acc.Render(s)
+		}
 		if i-1 >= 0 && i-1 < len(side) {
 			r += strings.Repeat(" ", max(0, koalaW+koalaGap-lipgloss.Width(r))) + side[i-1]
 		}
@@ -130,43 +114,64 @@ func koala(m mood, f int, caption string, bubbleW int) []string {
 	return out
 }
 
-// koalaProp is the row under the chin: what the koala is holding.
-func koalaProp(m mood, f int, acc lipgloss.Style) string {
-	switch m {
-	case moodSleep:
-		return greenStyle.Render("  ══════❦════════ ")
-	case moodPlan:
-		n := f / 4 % 8
-		return acc.Render("   ✎ " + strings.Repeat("⋯", n) + strings.Repeat(" ", 8-n) + "    ")
-	case moodExec:
-		keys := []rune("▫▫▫▫▫▫▫▫▫")
-		keys[(f*7+f/2)%len(keys)] = '▪'
-		keys[(f*3+4)%len(keys)] = '▪'
-		return acc.Render("   [" + string(keys) + "]   ")
-	case moodReview:
-		doc := []rune("≡≡≡≡≡≡≡≡≡")
-		doc[f/2%len(doc)] = '⌕'
-		return acc.Render("   ▕" + string(doc) + "▏   ")
-	case moodGate:
-		return acc.Bold(true).Render("   ◆ ◆ ◆ ◆ ◆ ◆   ")
-	case moodDone:
-		return acc.Render([]string{"   ✦  ·  ✧  ·  ✦ ", "   ·  ✧  ✦  ✧  · "}[f/5%2])
-	case moodFail:
-		return mutedStyle.Render([]string{"      '    '     ", "     .      .    "}[f/4%2])
+// koalaRow folds two pixel rows into one terminal row: the upper pixel is a
+// half block's foreground and the lower one its background.
+func koalaRow(top, bot string, closed bool) string {
+	var b strings.Builder
+	for x := 0; x < koalaW; x++ {
+		t, tok := koalaPixel(top[x], closed)
+		u, uok := koalaPixel(bot[x], closed)
+		st := lipgloss.NewStyle()
+		switch {
+		case !tok && !uok:
+			b.WriteByte(' ')
+		case !tok:
+			b.WriteString(st.Foreground(u).Render("▄"))
+		case !uok:
+			b.WriteString(st.Foreground(t).Render("▀"))
+		case t == u:
+			b.WriteString(st.Foreground(t).Render("█"))
+		default:
+			b.WriteString(st.Foreground(t).Background(u).Render("▀"))
+		}
 	}
-	return ""
+	return b.String()
 }
 
-// koalaSparkle decorates the top-right corner (floating z's, stars). It must
-// fit in koalaGap so bubble-less rows stay koalaW+koalaGap wide.
-func koalaSparkle(m mood, f int) string {
+// koalaPixel resolves a sprite pixel, including the mood-dependent eye.
+func koalaPixel(c byte, closed bool) (lipgloss.Color, bool) {
+	switch c {
+	case 'E':
+		c = 'K'
+	case 'c', 'o':
+		if closed == (c == 'c') {
+			c = 'K'
+		} else {
+			c = 'G'
+		}
+	}
+	col, ok := koalaPalette[c]
+	return col, ok
+}
+
+// koalaSparkle decorates row i to the right of the sprite (z's drifting up
+// from the ear, stars). It must fit in koalaGap so bubble-less rows stay
+// koalaW+koalaGap wide.
+func koalaSparkle(m mood, f, i int) string {
+	var frames []string
 	switch m {
 	case moodSleep:
-		return []string{" z", "  Z", "   z", ""}[f/6%4]
+		frames = []string{"z", " z", " Z", ""} // row 2, 1, 0, then a pause
 	case moodDone:
-		return []string{" ✧", "  ✦", ""}[f/5%3]
+		frames = []string{"✧", " ✦", "", ""}
+	default:
+		return ""
 	}
-	return ""
+	p := f / 6 % 4
+	if i != 2-p {
+		return ""
+	}
+	return frames[p]
 }
 
 // koalaBubble is the 3-row speech bubble to the koala's right.
