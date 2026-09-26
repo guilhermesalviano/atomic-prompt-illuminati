@@ -21,6 +21,10 @@ import (
 type Options struct {
 	Repo   string
 	Prompt string
+	// Plan is a pre-defined plan to execute instead of running the planner
+	// stage. When set, planning is skipped and the plan goes straight to the
+	// plan gate.
+	Plan *contracts.Plan
 	// Name is the optional worktree/branch name for a new run. When set, the
 	// branch is created with this name verbatim. When empty, the branch
 	// defaults to api/<current-branch> (e.g. api/main), suffixed -2, -3, ...
@@ -169,9 +173,15 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 
 	// --- PLAN -------------------------------------------------------------
-	plan, err := p.plan(ctx)
-	if err != nil {
-		return err
+	var plan *contracts.Plan
+	if p.Opts.Plan != nil {
+		plan = p.Opts.Plan
+		p.Gate.Info("using provided plan; skipping planner")
+	} else {
+		plan, err = p.plan(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	planJSON, _ := json.MarshalIndent(plan, "", "  ")
 	_ = run.Write("plan.json", planJSON)

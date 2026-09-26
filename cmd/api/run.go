@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
 	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
 	"github.com/guibs/atomic-prompt-illuminati/internal/models"
 	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
 	"github.com/guibs/atomic-prompt-illuminati/internal/tui"
@@ -29,6 +31,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 		yes, noTUI, allowDirty, keepWT, apply bool
 		maxIter                               int
 		name                                  string
+		planPath                              string
 		plannerModel, executorModel           string
 		reviewerModel                         string
 	)
@@ -72,6 +75,13 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 				KeepWorktree: keepWT,
 				Apply:        apply,
 			}
+			if planPath != "" {
+				plan, err := loadPlanFile(planPath)
+				if err != nil {
+					return err
+				}
+				opts.Plan = plan
+			}
 			if noTUI || yes || !isTTY() {
 				p := &pipeline.Pipeline{Cfg: cfg, Opts: opts}
 				return runPlain(cmd.Context(), p, yes)
@@ -81,6 +91,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to api/<current-branch>)")
+	cmd.Flags().StringVar(&planPath, "plan", "", "path to an existing plan JSON; skips the planner stage")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
@@ -322,6 +333,23 @@ func artifactBase(artifactsDir string) string {
 		return artifactsDir
 	}
 	return config.DefaultArtifactsDir()
+}
+
+// loadPlanFile reads and validates a plan JSON produced by a previous run (or
+// hand-written against plan.schema.json).
+func loadPlanFile(path string) (*contracts.Plan, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read plan: %w", err)
+	}
+	var plan contracts.Plan
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return nil, fmt.Errorf("parse plan %s: %w", path, err)
+	}
+	if err := plan.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid plan %s: %w", path, err)
+	}
+	return &plan, nil
 }
 
 func promptFrom(args []string, stdin *os.File) (string, error) {

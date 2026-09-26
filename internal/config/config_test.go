@@ -12,8 +12,8 @@ func TestDefault(t *testing.T) {
 	if c.Models.Planner.Agent != "claude" || c.Models.Executor.Agent != "codex" || c.Models.Reviewer.Agent != "opencode" {
 		t.Fatalf("unexpected default adapters: %+v", c.Models)
 	}
-	if c.Loop.MaxIterations != 2 {
-		t.Fatalf("want 2 iterations, got %d", c.Loop.MaxIterations)
+	if c.Loop.MaxIterations != 3 {
+		t.Fatalf("want 3 iterations, got %d", c.Loop.MaxIterations)
 	}
 	if c.Timeouts.Executor.Duration() != 45*time.Minute {
 		t.Fatalf("unexpected executor timeout %s", c.Timeouts.Executor.Duration())

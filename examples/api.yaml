@@ -22,7 +22,7 @@ models:
   # run starts; values here are the pre-selected defaults.
 
 loop:
-  max_iterations: 2
+  max_iterations: 3
 
 gates:
   after_plan: true

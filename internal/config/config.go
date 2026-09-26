@@ -120,7 +120,7 @@ func Default() *Config {
 		ApproveForMe: true,
 	}
 	c.Models.Reviewer = ModelSpec{Agent: "opencode", Model: "opencode-go/deepseek-v4.1-flash", Variant: "high", SubAgent: "plan", Fallback: "claude"}
-	c.Loop.MaxIterations = 2
+	c.Loop.MaxIterations = 3
 	c.Gates.AfterPlan = true
 	c.Gates.AfterReview = true
 	c.Timeouts.Planner = Duration(15 * time.Minute)

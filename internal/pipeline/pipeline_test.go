@@ -299,6 +299,58 @@ func (g *rejectPlanGate) PlanGate(context.Context, *contracts.Plan, string) (ui.
 	return ui.Reject, nil
 }
 
+func TestProvidedPlanSkipsPlanner(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	gate := &recordingGate{}
+
+	plannerRuns := 0
+	factory := func(name string) (agent.Agent, error) {
+		switch name {
+		case "claude":
+			return fakeAgent{"claude", agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				plannerRuns++
+				return nil, errors.New("planner must not run when a plan is provided")
+			}}, nil
+		case "codex":
+			return fakeAgent{"codex", agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"wrote feature"}`)}, nil
+			}}, nil
+		case "opencode":
+			return fakeAgent{"opencode", agent.Reviewer, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				if !strings.Contains(r.Prompt, "predefined summary") {
+					t.Error("review prompt missing the provided plan")
+				}
+				return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
+	}
+
+	plan := &contracts.Plan{
+		Summary:            "predefined summary",
+		Steps:              []contracts.PlanStep{{ID: "1", Description: "write feature.txt"}},
+		AcceptanceCriteria: []string{"feature.txt exists"},
+	}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run", Plan: plan}, Gate: gate, AgentFactory: factory}
+	if err := p.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if plannerRuns != 0 {
+		t.Fatalf("planner ran %d times, want 0", plannerRuns)
+	}
+	if p.Run.State != artifact.StateDone {
+		t.Fatalf("state = %s, want done", p.Run.State)
+	}
+	if data, err := p.Run.Read("plan.json"); err != nil || !strings.Contains(string(data), "predefined summary") {
+		t.Errorf("plan.json artifact missing the provided plan: %v", err)
+	}
+	if gate.planGates != 1 {
+		t.Fatalf("plan gate ran %d times, want 1 (provided plans still need approval)", gate.planGates)
+	}
+}
+
 func TestRejectedPlanStaysAborted(t *testing.T) {
 	repo := setupRepo(t)
 	cfg := baseConfig(t, repo)
