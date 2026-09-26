@@ -22,7 +22,8 @@ say "Downloading dependencies..."
 go mod download
 
 # --- Run tests --------------------------------------------------------------
-if go test "$MAIN_PKG" >/dev/null 2>&1; then
+say "Running tests..."
+if go test ./...; then
   say "Tests passed."
 else
   err "Tests failed. Run 'go test ./...' for details."

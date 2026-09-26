@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 	"github.com/guilhermesalviano/korchestrate/internal/models"
 )
 
