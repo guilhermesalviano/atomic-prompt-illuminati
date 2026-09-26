@@ -66,6 +66,10 @@ type Run struct {
 	Usage     Usage     `json:"usage"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+
+	// Autopilot runs skip every gate, then commit, push and open a PR.
+	Autopilot bool   `json:"autopilot,omitempty"`
+	PR        string `json:"pr,omitempty"` // pull request URL opened by autopilot
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)

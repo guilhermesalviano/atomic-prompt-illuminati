@@ -11,6 +11,7 @@ import (
 	"github.com/guilhermesalviano/korchestrate/internal/agent"
 	"github.com/guilhermesalviano/korchestrate/internal/artifact"
 	"github.com/guilhermesalviano/korchestrate/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/pipeline"
 )
 
 const (
@@ -32,6 +33,13 @@ func (a *App) View() string {
 
 	if a.help {
 		return fitView(a.renderHelp(w, h), w, h)
+	}
+
+	if a.full && a.current() != nil {
+		a.asideFits = false // "d" opens the Diff tab instead
+		footer := a.renderFullFooter(w)
+		bodyH := max(h-lipgloss.Height(footer), 3)
+		return fitView(lipgloss.JoinVertical(lipgloss.Left, a.renderMain(w, bodyH), footer), w, h)
 	}
 
 	sideW, mainW, asideW := a.layout(w)
@@ -249,6 +257,9 @@ func (a *App) renderSidebar(w, h int) string {
 		if e.Run != nil && e.Run.Usage.CostUSD > 0 {
 			meta = append(meta, fmt.Sprintf("$%.2f", e.Run.Usage.CostUSD))
 		}
+		if e.Autopilot {
+			meta = append(meta, "autopilot")
+		}
 		l2 := bar + "  " + mutedStyle.Render(truncate(strings.Join(meta, " · "), inner-4))
 		lines = append(lines, l1, l2, "")
 	}
@@ -323,6 +334,16 @@ func (a *App) renderMain(w, h int) string {
 		top = append(top, gate...)
 		top = append(top, "")
 	}
+	if e.Autopilot && !e.Live && e.State == artifact.StateDone {
+		for i, l := range wrap(pipeline.EndMessage(e.Run), inner-2) {
+			mark := "  "
+			if i == 0 {
+				mark = greenStyle.Bold(true).Render("✔ ")
+			}
+			top = append(top, mark+greenStyle.Render(l))
+		}
+		top = append(top, "")
+	}
 	if e.ErrText != "" {
 		errLines := wrap(sanitize(e.ErrText), inner-2)
 		if len(errLines) > 2 {
@@ -369,6 +390,9 @@ func (a *App) renderMain(w, h int) string {
 	lines = append(lines, flow...)
 
 	title := "RUN " + mutedStyle.Render(truncate(e.title(), inner-8))
+	if e.Autopilot {
+		title = "RUN " + cyanStyle.Bold(true).Render("AUTOPILOT") + " " + mutedStyle.Render(truncate(e.title(), inner-18))
+	}
 	border := cFaint
 	if e.Gate != nil {
 		border = cAmber
@@ -794,12 +818,16 @@ func (a *App) renderFooter(w int) string {
 	nameActive := a.inputFocus && a.field == fieldName
 	promptActive := a.inputFocus && a.field == fieldPrompt
 	body := inputLine("name", string(a.inputName), nameActive, "blank: current checkout", avail) + "\n" +
-		inputLine("prompt", string(a.input), promptActive, "describe the change you want…", avail)
+		inputLine("prompt", string(a.input), promptActive, "describe the change you want…", avail) + "\n" +
+		a.modeLine(avail)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Padding(0, 1).Width(w - 2).Render(body)
 
 	hints := []string{keyHint("h", "keys")}
 	e := a.current()
+	if e != nil {
+		hints = append(hints, keyHint("o", "full view"))
+	}
 	if w < 80 {
 		lines := packHints(hints, w-2)
 		lines = lines[:min(len(lines), 3)]
@@ -815,6 +843,28 @@ func (a *App) renderFooter(w int) string {
 		return box + "\n" + truncate(" "+amberStyle.Render("⚠ "+a.notice), w)
 	}
 	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
+}
+
+// modeLine shows the mode the next run starts in.
+func (a *App) modeLine(avail int) string {
+	mode := textStyle.Render("default") + mutedStyle.Render(" · asks before each step")
+	if a.autopilot {
+		mode = cyanStyle.Bold(true).Render("autopilot") + mutedStyle.Render(" · no questions; commits, pushes and opens a PR")
+	}
+	return truncate("  "+faintStyle.Render("mode:")+" "+mode+"  "+keyHint("ctrl+a", "switch"), avail)
+}
+
+// renderFullFooter keeps the full-screen run view to one hint line, falling
+// back to the regular footer while typing a prompt or confirming.
+func (a *App) renderFullFooter(w int) string {
+	if a.inputFocus || a.confirmDel != nil || a.confirmQuit {
+		return a.renderFooter(w)
+	}
+	if a.notice != "" {
+		return truncate(" "+amberStyle.Render("⚠ "+a.notice), w)
+	}
+	hints := []string{keyHint("o", "exit full view"), keyHint("n", "new run"), keyHint("h", "keys")}
+	return truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
 }
 
 // packHints wraps whole controls so their key and label stay together.

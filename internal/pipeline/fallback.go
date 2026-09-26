@@ -77,7 +77,7 @@ func (p *Pipeline) runStage(ctx context.Context, kind agent.Kind, build func(a a
 // pickFallback asks the gate to choose an untried adapter after a failure.
 func (p *Pipeline) pickFallback(ctx context.Context, kind agent.Kind, failed, preferred string, tried map[string]bool, cause error) (agentChoice, bool, error) {
 	var options []string
-	for _, n := range agent.Known() {
+	for _, n := range agent.Available() {
 		if !tried[n] {
 			options = append(options, n)
 		}
@@ -85,8 +85,19 @@ func (p *Pipeline) pickFallback(ctx context.Context, kind agent.Kind, failed, pr
 	if len(options) == 0 {
 		return agentChoice{}, false, nil
 	}
-	chosen, err := p.Gate.SelectAgent(ctx, kind, failed, options, preferred, cause)
-	if err != nil {
+	var (
+		chosen string
+		err    error
+	)
+	if p.Opts.Autopilot {
+		// The configured fallback when it is still untried, else the next one.
+		chosen = options[0]
+		for _, o := range options {
+			if o == preferred {
+				chosen = o
+			}
+		}
+	} else if chosen, err = p.Gate.SelectAgent(ctx, kind, failed, options, preferred, cause); err != nil {
 		return agentChoice{}, false, err
 	}
 	chosen = strings.ToLower(strings.TrimSpace(chosen))

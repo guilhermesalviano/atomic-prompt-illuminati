@@ -21,8 +21,10 @@ func adapterFor(name string) (agent.Agent, error) {
 		return agent.Codex{}, nil
 	case "opencode", "":
 		return agent.OpenCode{}, nil
+	case "antigravity":
+		return agent.Antigravity{}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent %q (want claude|codex|opencode)", name)
+		return nil, fmt.Errorf("unknown agent %q (want claude|codex|opencode|antigravity)", name)
 	}
 }
 

@@ -80,6 +80,12 @@ type App struct {
 	catalog *models.Catalog
 	setup   setupUI
 
+	// autopilot is the sticky mode for new runs, toggled with ctrl+a: off
+	// stops at every gate for confirmation, on runs straight through to a PR.
+	autopilot bool
+	// full expands the selected run to the whole terminal, toggled with "o".
+	full bool
+
 	input      []rune
 	inputName  []rune
 	inputFocus bool
@@ -156,6 +162,9 @@ func (a *App) SetInitial(prompt, name string, auto bool) {
 	a.autoRun = auto
 }
 
+// SetAutopilot preselects the mode new runs start in.
+func (a *App) SetAutopilot(on bool) { a.autopilot = on }
+
 // LastError returns the last pipeline error observed.
 func (a *App) LastError() error {
 	a.mu.Lock()
@@ -188,6 +197,9 @@ type Session struct {
 	done      chan struct{}
 	publisher func() error
 }
+
+// Autopilot reports whether the run skips every gate and ends with a PR.
+func (s *Session) Autopilot() bool { return s.entry.Autopilot }
 
 func (s *Session) Stage(k agent.Kind, msg string) {
 	s.app.send(stageEventMsg{entry: s.entry, kind: k, text: msg})
@@ -301,6 +313,9 @@ type Entry struct {
 	Started time.Time
 	Ended   time.Time
 
+	// Autopilot runs never stop at a gate; they finish with a pull request.
+	Autopilot bool
+
 	ver        int // bumped on every change; keys the render cache
 	logsLoaded bool
 	diffAt     time.Time
@@ -349,6 +364,7 @@ func entryFromRun(r *artifact.Run) *Entry {
 		Started: r.CreatedAt,
 		Ended:   r.UpdatedAt,
 	}
+	e.Autopilot = r.Autopilot
 	e.hydrate()
 	return e
 }
@@ -741,6 +757,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			e.hydrate()
 			e.diffAt = time.Time{}
 			e.push(logLine{level: levelStage, text: "run finished: " + string(e.State)})
+			if e.Autopilot {
+				a.notice = pipeline.EndMessage(e.Run)
+			}
 		})
 
 	case deletedMsg:
@@ -817,6 +836,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a, a.requestPublish()
 		}
 		switch msg.Type {
+		case tea.KeyCtrlA:
+			a.autopilot = !a.autopilot
 		case tea.KeyEsc:
 			a.inputFocus = false
 		case tea.KeyTab:
@@ -868,12 +889,20 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if msg.String() == "h" {
+	switch msg.String() {
+	case "h":
 		a.help = true
 		return a, nil
-	}
-	// The run list remains accessible while a gate is waiting.
-	if msg.String() == "b" {
+	case "ctrl+a":
+		a.autopilot = !a.autopilot
+		a.notice = "new runs start in " + modeName(a.autopilot) + " mode"
+		return a, nil
+	case "o":
+		a.toggleFull()
+		return a, nil
+	case "b":
+		// The run list remains accessible while a gate is waiting.
+		a.full = false
 		a.showSidebar = !a.showSidebar
 		return a, nil
 	}
@@ -1134,6 +1163,7 @@ func (a *App) startRun(name, prompt string) tea.Cmd {
 	e := newEntry(prompt, a.cfg.Repo)
 	e.Name = strings.TrimSpace(name)
 	e.Models = a.choices
+	e.Autopilot = a.autopilot
 	e.Plan = plan
 	s := &Session{entry: e, app: a, publish: make(chan publishRequest, 1), done: make(chan struct{})}
 	e.Session = s
@@ -1218,6 +1248,26 @@ func retryStage(t tab, e *Entry) agent.Kind {
 		}
 	}
 	return e.reachedStage()
+}
+
+// toggleFull expands the selected run to the whole terminal or restores the
+// normal layout.
+func (a *App) toggleFull() {
+	if !a.full && a.current() == nil {
+		a.notice = "select a run to open it full screen"
+		return
+	}
+	a.full = !a.full
+	if a.full && a.width < 80 {
+		a.showSidebar = false
+	}
+}
+
+func modeName(autopilot bool) string {
+	if autopilot {
+		return "autopilot"
+	}
+	return "default"
 }
 
 func (a *App) move(delta int) {

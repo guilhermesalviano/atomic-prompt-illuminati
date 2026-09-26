@@ -1,5 +1,5 @@
-// Package agent adapts the supported agent CLIs (claude, codex, opencode) behind
-// one interface so the pipeline can treat them uniformly.
+// Package agent adapts the supported agent CLIs (claude, codex, opencode,
+// antigravity) behind one interface so the pipeline can treat them uniformly.
 package agent
 
 import (
@@ -18,7 +18,7 @@ const (
 )
 
 // Known lists the adapter names the orchestrator can invoke.
-func Known() []string { return []string{"claude", "codex", "opencode"} }
+func Known() []string { return []string{"claude", "codex", "opencode", "antigravity"} }
 
 // Usage captures token/cost accounting when the CLI reports it.
 type Usage struct {

@@ -23,10 +23,12 @@ var helpGroups = []helpGroup{
 		{"n / i / /", "new run"},
 		{"↑↓  k j", "select run"},
 		{"enter", "open"},
+		{"o", "full-screen run"},
 		{"b", "toggle worktrees"},
 		{"t", "retry failed run at tab's stage"},
 		{"x", "delete run"},
 		{"m", "provider · model · effort"},
+		{"ctrl+a", "default / autopilot mode"},
 	}},
 	{"VIEWS", []helpKey{
 		{"tab / →", "next view"},

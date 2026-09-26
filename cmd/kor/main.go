@@ -33,7 +33,7 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDashboardDefault(cmd, configPath, repo, artifactsDir, false, false, false)
+			return runDashboardDefault(cmd, configPath, repo, artifactsDir, false, false, false, false)
 		},
 	}
 

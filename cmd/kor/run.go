@@ -29,6 +29,7 @@ import (
 func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	var (
 		yes, noTUI, allowDirty, keepWT, apply bool
+		autopilot                             bool
 		maxIter                               int
 		name                                  string
 		planPaths                             []string
@@ -81,6 +82,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 				AllowDirty:   allowDirty,
 				KeepWorktree: keepWT,
 				Apply:        apply,
+				Autopilot:    autopilot,
 			}
 			if noTUI || yes || !isTTY() {
 				p := &pipeline.Pipeline{Cfg: cfg, Opts: opts}
@@ -93,6 +95,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	cmd.Flags().StringVar(&name, "name", "", "branch for this run (blank/current name uses the current checkout; a new name creates a worktree)")
 	cmd.Flags().StringArrayVar(&planPaths, "plan", nil, "plan file(s) (.md or .json); skips the planner stage (mentions like @docs/plan.md in the prompt work too)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
+	cmd.Flags().BoolVar(&autopilot, "autopilot", false, "never ask: approve every gate, then commit, push and open a PR")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
 	cmd.Flags().BoolVar(&keepWT, "keep-worktree", false, "keep the worktree and branch even if the run fails")
@@ -132,7 +135,7 @@ func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
 			p := &pipeline.Pipeline{
 				Cfg:  cfg,
 				Run:  run,
-				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: keepWT, From: agent.Kind(from)},
+				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: keepWT, From: agent.Kind(from), Autopilot: run.Autopilot},
 			}
 			return runPlain(cmd.Context(), p, yes)
 		},
@@ -144,22 +147,23 @@ func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
 }
 
 func newDashboardCmd(configPath, repo, artifactsDir *string) *cobra.Command {
-	var allowDirty, keepWT, apply bool
+	var allowDirty, keepWT, apply, autopilot bool
 	cmd := &cobra.Command{
 		Use:   "tui",
 		Short: "open the interactive dashboard (prompt input, worktrees, ASCII pipeline)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDashboardDefault(cmd, *configPath, *repo, *artifactsDir, allowDirty, keepWT, apply)
+			return runDashboardDefault(cmd, *configPath, *repo, *artifactsDir, allowDirty, keepWT, apply, autopilot)
 		},
 	}
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "allow starting runs on a dirty repo")
 	cmd.Flags().BoolVar(&keepWT, "keep-worktree", false, "keep the worktree and branch even if a run fails")
 	cmd.Flags().BoolVar(&apply, "apply", false, "keep worktrees on success and mark runs applied")
+	cmd.Flags().BoolVar(&autopilot, "autopilot", false, "start new runs in autopilot mode (switch with ctrl+a)")
 	return cmd
 }
 
 // runDashboardDefault is shared by the root command and `kor tui`.
-func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir string, allowDirty, keepWT, apply bool) error {
+func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir string, allowDirty, keepWT, apply, autopilot bool) error {
 	if !isTTY() {
 		return cmd.Help()
 	}
@@ -170,7 +174,7 @@ func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir stri
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	opts := pipeline.Options{Repo: cfg.Repo, AllowDirty: allowDirty, KeepWorktree: keepWT, Apply: apply}
+	opts := pipeline.Options{Repo: cfg.Repo, AllowDirty: allowDirty, KeepWorktree: keepWT, Apply: apply, Autopilot: autopilot}
 	return launchDashboard(cmd.Context(), cfg, opts, "", "", false, nil)
 }
 
@@ -208,6 +212,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 
 	app := tui.NewApp(cfg, cfg.ArtifactsDir)
 	app.SetInitial(initialPrompt, initialName, autoStart)
+	app.SetAutopilot(template.Autopilot)
 	app.PlanFromPrompt = func(prompt string) (*contracts.Plan, string, error) {
 		return planFiles(prompt, planPaths)
 	}
@@ -224,6 +229,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 		opts.Prompt = prompt
 		opts.Plan = plan
 		opts.Name = name
+		opts.Autopilot = s.Autopilot()
 		if opts.Repo == "" {
 			opts.Repo = cfg.Repo
 		}
@@ -251,6 +257,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 		runCfg.ArtifactsDir = cfg.ArtifactsDir
 		opts := template
 		opts.Repo, opts.Prompt, opts.From = run.Repo, run.Prompt, from
+		opts.Autopilot = s.Autopilot()
 		p := &pipeline.Pipeline{Cfg: applyChoices(runCfg, choices), Opts: opts, Run: run, Gate: s}
 		go func() {
 			defer wg.Done()

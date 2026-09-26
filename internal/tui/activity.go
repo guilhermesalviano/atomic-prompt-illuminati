@@ -60,8 +60,8 @@ func summarizeEvent(ev agent.Event) (logLine, bool) {
 	return logLine{kind: ev.Kind, level: lvl, text: sanitize(text)}, true
 }
 
-// describeJSON recognises the event shapes emitted by codex, opencode and
-// claude. Unknown shapes are dropped.
+// describeJSON recognises the event shapes emitted by codex, opencode,
+// claude and antigravity. Unknown shapes are dropped.
 func describeJSON(obj map[string]any) (string, logLevel) {
 	typ := str(obj, "type")
 
@@ -127,6 +127,20 @@ func describeJSON(obj map[string]any) (string, logLevel) {
 			msg += fmt.Sprintf(" · $%.2f", c)
 		}
 		return msg, levelInfo
+	}
+
+	// agy --output-format json: one envelope with status and usage.
+	if _, ok := obj["conversation_id"]; ok {
+		if st := str(obj, "status"); st != "" {
+			msg := "antigravity finished (" + strings.ToLower(st) + ")"
+			if u, ok := obj["usage"].(map[string]any); ok {
+				msg += fmt.Sprintf(" · %s in / %s out", tokens(num(u, "input_tokens")), tokens(num(u, "output_tokens")))
+			}
+			if st != "SUCCESS" {
+				return msg, levelError
+			}
+			return msg, levelInfo
+		}
 	}
 	return "", levelDetail
 }

@@ -13,7 +13,7 @@ import (
 )
 
 // Choice is one stage's provider/model/effort selection. Agent is the adapter
-// (claude | codex | opencode), Model the CLI model id and Variant the
+// (claude | codex | opencode | antigravity), Model the CLI model id and Variant the
 // reasoning effort (codex model_reasoning_effort, opencode --variant).
 type Choice struct {
 	Agent   string
@@ -96,7 +96,8 @@ func (c *Catalog) Efforts(agentName, model string) []string {
 }
 
 // ProviderOrder lists the adapters in the canonical selection order.
-func ProviderOrder() []string { return agent.Known() }
+// Optional adapters whose CLI is not installed are left out.
+func ProviderOrder() []string { return agent.Available() }
 
 // ChoicesFromConfig seeds the picker with the resolved configuration.
 func ChoicesFromConfig(cfg *config.Config) Choices {
@@ -139,6 +140,9 @@ func (c *Catalog) DefaultModel(agentName string) string {
 // usable catalog.
 func Discover() *Catalog {
 	c := &Catalog{Agents: []AgentInfo{claudeCatalog(), DiscoverCodex(), DiscoverOpencode()}}
+	if agent.Installed("antigravity") {
+		c.Agents = append(c.Agents, DiscoverAntigravity())
+	}
 	for _, name := range ProviderOrder() {
 		if c.Agent(name) == nil {
 			c.Agents = append(c.Agents, AgentInfo{Agent: name})

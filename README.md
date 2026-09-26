@@ -13,7 +13,8 @@ branch name to work in an isolated worktree instead.
 
 ## Install
 
-Requires Go 1.22+ and the agent CLIs you want to use (`claude`, `codex`, `opencode`).
+Requires Go 1.22+ and the agent CLIs you want to use (`claude`, `codex`, `opencode`,
+and optionally `agy` for Antigravity).
 
 ```sh
 ./install.sh
@@ -38,6 +39,19 @@ The dashboard starts with the left sidebar closed. Press `b` to toggle the run
 list. On narrow terminals it opens at full width: use `↑↓` to select a run and
 `enter` to open it, or `b`/`esc` to close the list. Use `tab` or `1`–`5` for
 Activity, Plan, Review, Diff, and Support; `n` starts a prompt and `m` opens model selection.
+Press `o` to open the selected run full screen, hiding the run list and diff
+aside; press `o` again to return.
+
+Each run starts in one of two modes, shown under the prompt and switched with
+`ctrl+a` (or preselected with `--autopilot`):
+
+- **default** stops for your confirmation: plan approval, the review verdict,
+  and whether to commit, push or leave the changes staged.
+- **autopilot** never asks. It approves the plan, sends failed reviews back to
+  the executor (up to `max_iterations`), falls back to another agent on
+  failure, then commits, pushes and opens a pull request with `gh`. It ends
+  with a message summarizing the commit, push and PR link, or why it stopped.
+  Autopilot runs are badged `AUTOPILOT`; `t` retries a stopped one in the same mode.
 
 The Support tab is a terminal for the selected run: press `enter` or `!`, type a
 shell command and press `enter` to run it in the run's checkout. Output streams
@@ -59,7 +73,7 @@ retry that step without restarting earlier stages, or choose another agent.
 
 | Command | Description |
 | --- | --- |
-| `kor run [prompt]` | plan, execute and review a prompt end to end |
+| `kor run [prompt]` | plan, execute and review a prompt end to end (`--autopilot` to skip every confirmation and open a PR) |
 | `kor` / `kor dashboard` | open the TUI dashboard |
 | `kor resume` | resume a previous run |
 | `kor list` | list runs |
@@ -71,7 +85,8 @@ retry that step without restarting earlier stages, or choose another agent.
 
 Edit [config.json](config.json) to define the default provider CLI (`agent`) and
 `model` for each stage: `planner`, `executor`, and `reviewer`. Supported agents are
-`claude`, `codex`, and `opencode`. Each stage can also set a `fallback` agent;
+`claude`, `codex`, `opencode`, and `antigravity` (offered only when the `agy`
+CLI is installed; it can fill any stage). Each stage can also set a `fallback` agent;
 `variant` controls reasoning effort and `subagent` selects an OpenCode agent.
 These values are preselected in the dashboard's model picker.
 

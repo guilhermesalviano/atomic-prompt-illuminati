@@ -21,7 +21,7 @@ func retryStep[T any](ctx context.Context, p *Pipeline, step string, fn func() (
 			return value, err
 		}
 		gate, ok := p.Gate.(retryGate)
-		if !ok {
+		if !ok || p.Opts.Autopilot {
 			return value, err
 		}
 		p.Gate.Info(step + " failed: " + err.Error())

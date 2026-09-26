@@ -40,6 +40,10 @@ type Options struct {
 	// Apply leaves the worktree in place and, when the remote supports it, is
 	// where a PR step would run. The branch is always committed on success.
 	Apply bool
+	// Autopilot never stops for confirmation: plans and reviews are accepted,
+	// failed reviews go straight to a fix pass, a failed agent falls back on
+	// its own, and a passed run is committed, pushed and opened as a PR.
+	Autopilot bool
 }
 
 // RunObserver is optionally implemented by a Gate that wants a snapshot of the
@@ -156,6 +160,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 	run.Branch = p.branch
 	run.Worktree = p.worktreePath
+	run.Autopilot = p.Opts.Autopilot
 	run.Error = ""
 	if err := run.Save(); err != nil {
 		return err
@@ -275,7 +280,9 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StateGatePlan); err != nil {
 		return err
 	}
-	if p.Cfg.Gates.AfterPlan && !resumed {
+	if p.Cfg.Gates.AfterPlan && !resumed && p.Opts.Autopilot {
+		p.Gate.Info("autopilot: plan approved")
+	} else if p.Cfg.Gates.AfterPlan && !resumed {
 		p.Gate.Stage(agent.Planner, "awaiting plan approval")
 		decision, gerr := p.Gate.PlanGate(ctx, plan, "")
 		if gerr != nil {
@@ -311,7 +318,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		if iter >= p.Cfg.Loop.MaxIterations {
 			cause := fmt.Errorf("review did not pass within %d iteration(s)", iter+1)
 			gate, ok := p.Gate.(retryGate)
-			if !ok {
+			if !ok || p.Opts.Autopilot {
 				return cause
 			}
 			again, gateErr := gate.RetryGate(ctx, "review fixes", cause)
@@ -333,8 +340,10 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StatePublishing); err != nil {
 		return err
 	}
-	decision, err := p.Gate.CommitGate(ctx, p.branch, p.worktreePath)
-	if err != nil {
+	decision := ui.CommitAndPush
+	if p.Opts.Autopilot {
+		p.Gate.Info("autopilot: committing and pushing " + p.branch)
+	} else if decision, err = p.Gate.CommitGate(ctx, p.branch, p.worktreePath); err != nil {
 		return err
 	}
 	if decision == ui.CommitStop {
@@ -377,11 +386,24 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			p.Gate.Info("pushed " + p.branch + " to origin")
 		}
 	}
+	if p.Opts.Autopilot && run.Pushed {
+		p.Gate.Info("autopilot: opening a pull request")
+		url, err := openPR(ctx, p.worktreePath, p.branch, prTitle(message), prBody(run, plan))
+		if err != nil {
+			p.Gate.Info("warning: could not open a pull request: " + err.Error())
+		} else {
+			run.PR = url
+			p.Gate.Info("pull request " + url)
+		}
+	}
 	if err := run.SetState(artifact.StateDone); err != nil {
 		return err
 	}
 	p.Gate.Info("done; branch " + p.branch + " at " + shortSHA(run.Commit))
 	p.Gate.Info("worktree retained at " + p.worktreePath)
+	if p.Opts.Autopilot {
+		p.Gate.Info(EndMessage(run))
+	}
 	return nil
 }
 
@@ -437,7 +459,7 @@ func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fi
 
 	if review.Pass() {
 		p.Gate.Stage(agent.Reviewer, "review passed")
-		if p.Cfg.Gates.AfterReview {
+		if p.Cfg.Gates.AfterReview && !p.Opts.Autopilot {
 			decision, err := p.Gate.ReviewGate(ctx, review, diff)
 			if err != nil {
 				return false, "", err
@@ -455,7 +477,9 @@ func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fi
 	}
 
 	p.Gate.Stage(agent.Reviewer, "review failed")
-	if p.Cfg.Gates.AfterReview {
+	if p.Opts.Autopilot {
+		p.Gate.Info("autopilot: sending the review issues back to the executor")
+	} else if p.Cfg.Gates.AfterReview {
 		decision, err := p.Gate.ReviewGate(ctx, review, diff)
 		if err != nil {
 			return false, "", err
@@ -485,6 +509,10 @@ func (p *Pipeline) deriveBranch(ctx context.Context, base string) (branch string
 		}
 		if !worktree.BranchExists(p.Opts.Repo, candidate) {
 			return candidate, false, nil
+		}
+		// Autopilot never adopts someone else's work: it takes the next free name.
+		if p.Opts.Autopilot {
+			continue
 		}
 		d, gerr := p.Gate.WorktreeGate(ctx, candidate)
 		if gerr != nil {

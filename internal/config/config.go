@@ -35,7 +35,7 @@ func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(),
 
 // ModelSpec configures one agent invocation.
 type ModelSpec struct {
-	Agent     string   `yaml:"agent"`    // adapter: claude | codex | opencode
+	Agent     string   `yaml:"agent"`    // adapter: claude | codex | opencode | antigravity
 	Model     string   `yaml:"model"`    // provider/model
 	Variant   string   `yaml:"variant"`  // reasoning effort, provider-specific
 	SubAgent  string   `yaml:"subagent"` // opencode agent name
@@ -70,6 +70,8 @@ func DefaultModelFor(agent string) string {
 		return "gpt-6-sol"
 	case "opencode":
 		return "opencode-go/deepseek-v4.1-flash"
+	case "antigravity":
+		return "gemini-3.1-pro-high"
 	default:
 		return ""
 	}

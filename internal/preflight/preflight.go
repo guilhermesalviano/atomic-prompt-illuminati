@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
 	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
@@ -34,23 +35,33 @@ func Checks(repo string, agents ...string) []Check {
 		want[a] = true
 	}
 	all := len(want) == 0
-	bins := []string{"claude", "codex", "opencode"}
+	// Optional adapters are only checked when installed or explicitly used.
+	var names []string
+	for _, n := range agent.Known() {
+		if want[n] || (all && agent.Installed(n)) {
+			names = append(names, n)
+		}
+	}
 
 	var checks []Check
-	for _, b := range bins {
-		if all || want[b] {
-			// Non-fatal: a missing CLI is surfaced to the user, who can then
-			// pick another adapter when the stage runs.
-			checks = append(checks, versionCheck(b, "--version", false))
-		}
+	for _, n := range names {
+		// Non-fatal: a missing CLI is surfaced to the user, who can then
+		// pick another adapter when the stage runs.
+		checks = append(checks, versionCheck(n, binFor(n), "--version", false))
 	}
 	checks = append(checks, gitRepoCheck(repo))
-	for _, b := range bins {
-		if all || want[b] {
-			checks = append(checks, authChecks[b]())
-		}
+	for _, n := range names {
+		checks = append(checks, authChecks[n]())
 	}
 	return checks
+}
+
+// binFor returns the CLI binary for an adapter name.
+func binFor(name string) string {
+	if name == "antigravity" {
+		return agent.AntigravityBin
+	}
+	return name
 }
 
 var authChecks = map[string]func() Check{
@@ -66,6 +77,11 @@ var authChecks = map[string]func() Check{
 	"opencode": func() Check {
 		return authCheck("opencode", []string{
 			filepath.Join(home(), ".local", "share", "opencode", "auth.json"),
+		}, "")
+	},
+	"antigravity": func() Check {
+		return authCheck("antigravity", []string{
+			filepath.Join(home(), ".gemini", "antigravity-cli", "antigravity-oauth-token"),
 		}, "")
 	},
 }
@@ -84,10 +100,10 @@ func Fatal(checks []Check) error {
 	return nil
 }
 
-func versionCheck(bin, flag string, fatal bool) Check {
+func versionCheck(name, bin, flag string, fatal bool) Check {
 	path, err := exec.LookPath(bin)
 	if err != nil {
-		return Check{Name: bin, OK: false, Fatal: fatal, Detail: "not found on PATH"}
+		return Check{Name: name, OK: false, Fatal: fatal, Detail: bin + " not found on PATH"}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -99,9 +115,9 @@ func versionCheck(bin, flag string, fatal bool) Check {
 		if line == "" {
 			line = err.Error()
 		}
-		return Check{Name: bin, OK: true, Fatal: fatal, Detail: fmt.Sprintf("%s (%s)", path, firstLine(line))}
+		return Check{Name: name, OK: true, Fatal: fatal, Detail: fmt.Sprintf("%s (%s)", path, firstLine(line))}
 	}
-	return Check{Name: bin, OK: true, Fatal: fatal, Detail: fmt.Sprintf("%s (%s)", path, firstLine(string(out)))}
+	return Check{Name: name, OK: true, Fatal: fatal, Detail: fmt.Sprintf("%s (%s)", path, firstLine(string(out)))}
 }
 
 func gitRepoCheck(repo string) Check {
