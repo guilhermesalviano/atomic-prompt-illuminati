@@ -209,6 +209,22 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			p.Gate.Info("worktree " + p.worktreePath + " on " + p.branch)
 		}
 	}
+	unlock, err := worktree.LockCheckout(p.worktreePath)
+	if err != nil {
+		// A checkout another run is using must not be cleaned up.
+		p.reused = true
+		return err
+	}
+	defer unlock()
+	if gate, ok := p.Gate.(publishControls); ok {
+		gate.SetPublishHandler(func() error {
+			// Once the user publishes, failure cleanup must preserve the commit.
+			p.Opts.KeepWorktree = true
+			err := publishRun(run)
+			p.notify()
+			return err
+		})
+	}
 
 	// --- PLAN -------------------------------------------------------------
 	var plan *contracts.Plan
@@ -216,11 +232,12 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		plan = p.Opts.Plan
 		p.Gate.Info("using provided plan; skipping planner")
 	} else {
-		plan, err = p.plan(ctx)
+		plan, err = retryStep(ctx, p, "planner", func() (*contracts.Plan, error) { return p.plan(ctx) })
 		if err != nil {
 			return err
 		}
 	}
+	p.processControls()
 	planJSON, _ := json.MarshalIndent(plan, "", "  ")
 	_ = run.Write("plan.json", planJSON)
 	if err := run.SetState(artifact.StateGatePlan); err != nil {
@@ -282,15 +299,25 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StateCommitting); err != nil {
 		return err
 	}
-	commit, err := worktree.Commit(p.worktreePath, fmt.Sprintf("%s\n\napi run %s", plan.Summary, run.ID))
+	commit, err := retryStep(ctx, p, "commit", func() (string, error) {
+		return worktree.Commit(p.worktreePath, fmt.Sprintf("%s\n\napi run %s", plan.Summary, run.ID))
+	})
 	if err != nil {
 		return err
 	}
-	run.Commit = commit
+	if commit != "" {
+		run.Commit, run.Pushed = commit, false
+	}
+	p.Opts.KeepWorktree = true
+	if err := run.Save(); err != nil {
+		return err
+	}
 	if decision == ui.CommitAndPush {
 		// A failed push must not be treated as a failed run: that would tear
 		// down the worktree and discard the commit that just succeeded.
-		if err := worktree.Push(p.worktreePath, p.branch); err != nil {
+		if _, err := retryStep(ctx, p, "push", func() (bool, error) {
+			return true, worktree.Push(p.worktreePath, p.branch)
+		}); err != nil {
 			p.Gate.Info("warning: push failed: " + err.Error())
 			p.Gate.Info("commit is safe on " + p.branch + "; push it manually")
 		} else {
@@ -309,7 +336,13 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 // cycle runs one executor+reviewer pass. It returns whether the review passed
 // and, when it did not, the fix instructions for the next iteration.
 func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fix string) (bool, string, error) {
-	report, err := p.execute(ctx, plan, iter, fix)
+	report, err := retryStep(ctx, p, "executor", func() (*contracts.ExecReport, error) {
+		report, execErr := p.execute(ctx, plan, iter, fix)
+		if stageErr := worktree.Stage(p.worktreePath); stageErr != nil && execErr == nil {
+			return report, stageErr
+		}
+		return report, execErr
+	})
 	if err != nil {
 		return false, "", err
 	}
@@ -327,11 +360,14 @@ func (p *Pipeline) cycle(ctx context.Context, plan *contracts.Plan, iter int, fi
 	if strings.TrimSpace(diff) == "" {
 		p.Gate.Info("executor produced no changes")
 	}
+	p.Gate.Info("executor changes staged on " + p.branch)
+	p.processControls()
 
-	review, err := p.review(ctx, plan, diff, iter)
+	review, err := retryStep(ctx, p, "reviewer", func() (*contracts.Review, error) { return p.review(ctx, plan, diff, iter) })
 	if err != nil {
 		return false, "", err
 	}
+	p.processControls()
 	data, _ := json.MarshalIndent(review, "", "  ")
 	_ = p.Run.Write(fmt.Sprintf("review.%d.json", iter), data)
 	_ = p.Run.Write("review.json", data)

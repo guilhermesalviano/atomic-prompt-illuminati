@@ -25,7 +25,9 @@ func testConfig() *config.Config {
 
 func TestViewRendersPanes(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
-	a.width, a.height = 100, 30
+	a.width, a.height = 140, 40
+	a.showSidebar = true
+	a.showAside = false
 
 	e := newEntry("add rate limiting", "/tmp/repo")
 	e.State = artifact.StateExecuting
@@ -83,7 +85,7 @@ func TestViewEmpty(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
 	a.width, a.height = 80, 24
 	view := a.View()
-	if !strings.Contains(view, "WORKTREES") || !strings.Contains(view, "type a prompt") {
+	if strings.Contains(view, "WORKTREES") || !strings.Contains(view, "type a prompt") {
 		t.Fatalf("unexpected empty view:\n%s", view)
 	}
 }

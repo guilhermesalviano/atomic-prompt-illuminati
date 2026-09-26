@@ -90,6 +90,10 @@ func (p *Pipeline) pickFallback(ctx context.Context, kind agent.Kind, failed, pr
 		return agentChoice{}, false, err
 	}
 	chosen = strings.ToLower(strings.TrimSpace(chosen))
+	if chosen == "retry" {
+		a, model, err := p.stageChoice(kind)
+		return agentChoice{agent: a, model: model}, err == nil, err
+	}
 	if chosen == "" || tried[chosen] {
 		return agentChoice{}, false, nil
 	}

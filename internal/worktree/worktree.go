@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 func git(dir string, args ...string) (string, error) {
@@ -48,6 +51,24 @@ func IsClean(repo string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(out) == "", nil
+}
+
+// LockCheckout prevents two kor runs from editing or publishing one checkout.
+// The OS releases the lock even if a process exits unexpectedly.
+func LockCheckout(repo string) (func(), error) {
+	dir, err := git(repo, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(strings.TrimSpace(dir), "kor-run.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("checkout is busy with another kor run: %w", err)
+	}
+	return func() { _ = f.Close() }, nil
 }
 
 // Add creates a new worktree at path on a fresh branch.
@@ -171,7 +192,7 @@ func Diff(worktree string) (string, error) {
 	if _, err := git(worktree, "add", "-A", "-N"); err != nil {
 		return "", err
 	}
-	out, err := git(worktree, "diff", "--no-color", "--no-ext-diff")
+	out, err := git(worktree, "diff", "HEAD", "--no-color", "--no-ext-diff")
 	if err != nil {
 		return "", err
 	}

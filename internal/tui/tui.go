@@ -63,10 +63,10 @@ type App struct {
 	// A failed resolution blocks the run and explains itself via notice.
 	PlanFromPrompt func(prompt string) (*contracts.Plan, string, error)
 
-	cfg     *config.Config
-	entries []*Entry
-	cursor  int
-	listTop int
+	cfg         *config.Config
+	entries     []*Entry
+	cursor      int
+	listTop     int
 	showSidebar bool
 
 	// choices is the sticky pre-run provider/model/effort selection, edited
@@ -170,8 +170,11 @@ func (a *App) send(m tea.Msg) {
 
 // Session routes a single pipeline run's gate calls into the dashboard.
 type Session struct {
-	entry *Entry
-	app   *App
+	entry     *Entry
+	app       *App
+	publish   chan publishRequest
+	done      chan struct{}
+	publisher func() error
 }
 
 func (s *Session) Stage(k agent.Kind, msg string) {
@@ -203,12 +206,7 @@ func (s *Session) CommitGate(ctx context.Context, branch, worktree string) (ui.C
 		commitReply: make(chan ui.CommitDecision, 1),
 	}
 	s.app.send(gateEventMsg{entry: s.entry, req: req})
-	select {
-	case d := <-req.commitReply:
-		return d, nil
-	case <-ctx.Done():
-		return ui.CommitStop, ctx.Err()
-	}
+	return awaitSession(ctx, s, (<-chan ui.CommitDecision)(req.commitReply))
 }
 
 func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
@@ -227,12 +225,7 @@ func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed strin
 		}
 	}
 	s.app.send(gateEventMsg{entry: s.entry, req: req})
-	select {
-	case c := <-req.agentReply:
-		return c, nil
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+	return awaitSession(ctx, s, (<-chan string)(req.agentReply))
 }
 
 // WorktreeGate asks whether to reuse an existing worktree/branch or create a
@@ -244,27 +237,20 @@ func (s *Session) WorktreeGate(ctx context.Context, branch string) (ui.WorktreeD
 		worktreeReply: make(chan ui.WorktreeDecision, 1),
 	}
 	s.app.send(gateEventMsg{entry: s.entry, req: req})
-	select {
-	case d := <-req.worktreeReply:
-		return d, nil
-	case <-ctx.Done():
-		return ui.WorktreeCreate, ctx.Err()
-	}
+	return awaitSession(ctx, s, (<-chan ui.WorktreeDecision)(req.worktreeReply))
 }
 
 func (s *Session) gate(ctx context.Context, req *gateReq) (ui.Decision, error) {
 	req.reply = make(chan ui.Decision, 1)
 	s.app.send(gateEventMsg{entry: s.entry, req: req})
-	select {
-	case d := <-req.reply:
-		return d, nil
-	case <-ctx.Done():
-		return ui.Reject, ctx.Err()
-	}
+	return awaitSession(ctx, s, (<-chan ui.Decision)(req.reply))
 }
 
 // Finish reports the pipeline outcome and updates the entry.
 func (s *Session) Finish(err error, run *artifact.Run) {
+	if s.done != nil {
+		close(s.done)
+	}
 	s.app.recordError(err)
 	s.app.send(doneEventMsg{entry: s.entry, err: err, run: run})
 }
@@ -307,6 +293,7 @@ type Entry struct {
 	diffAt     time.Time
 	diffBusy   bool // a live snapshot is in flight
 	deleting   bool // a delete is in flight
+	publishing bool // commit and push is queued or running
 }
 
 // branch is the run's git branch, or the requested name before it exists.
@@ -516,6 +503,7 @@ const (
 	gateCommit
 	gateAgent
 	gateWorktree
+	gateRetry
 )
 
 type gateReq struct {
@@ -541,6 +529,8 @@ type gateReq struct {
 
 	// gateWorktree fields: reusing or replacing an existing worktree/branch.
 	worktreeReply chan ui.WorktreeDecision
+	step          string
+	retryReply    chan bool
 }
 
 type (
@@ -747,6 +737,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return a.handleKey(t)
+	case publishResultMsg:
+		a.mutate(t.entry, func(e *Entry) {
+			e.publishing = false
+			if t.run != nil {
+				e.Run = t.run
+			}
+			message := "Committed and pushed " + e.branch()
+			if t.err != nil {
+				message = t.err.Error()
+			}
+			e.push(logLine{level: levelInfo, text: message})
+			a.notice = message
+			e.touch()
+		})
 	}
 	return a, nil
 }
@@ -776,6 +780,9 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if a.inputFocus {
+		if msg.String() == "ctrl+p" {
+			return a, a.requestPublish()
+		}
 		switch msg.Type {
 		case tea.KeyEsc:
 			a.inputFocus = false
@@ -836,8 +843,25 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return a, nil
 	}
+	if msg.String() == "p" || msg.String() == "ctrl+p" {
+		if e := a.current(); e != nil && e.Gate != nil && e.Gate.kind == gateCommit {
+			a.answerCommit(ui.CommitAndPush)
+			return a, nil
+		}
+		return a, a.requestPublish()
+	}
 	if e := a.current(); e != nil && e.Gate != nil {
 		switch e.Gate.kind {
+		case gateRetry:
+			switch msg.String() {
+			case "t", "enter":
+				a.answerRetry(true)
+			case "s", "esc":
+				a.answerRetry(false)
+			case "ctrl+c", "q":
+				return a.quit()
+			}
+			return a, nil
 		case gateAgent:
 			return a.handleAgentKey(e.Gate, msg)
 		case gateCommit:
@@ -959,6 +983,8 @@ func (a *App) askDelete() {
 	e := a.current()
 	switch {
 	case e == nil || e.deleting:
+	case e.publishing:
+		a.notice = "wait for publishing to finish before deleting this run"
 	case e.Live:
 		a.notice = "can't delete a running worktree; wait for it to finish"
 	default:
@@ -1029,7 +1055,7 @@ func (a *App) startRun(name, prompt string) tea.Cmd {
 	e.Name = strings.TrimSpace(name)
 	e.Models = a.choices
 	e.Plan = plan
-	s := &Session{entry: e, app: a}
+	s := &Session{entry: e, app: a, publish: make(chan publishRequest, 1), done: make(chan struct{})}
 	e.Session = s
 	a.entries = append([]*Entry{e}, a.entries...)
 	a.cursor = 0
@@ -1085,6 +1111,8 @@ func (a *App) handleAgentKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg.String() {
+	case "t":
+		a.answerAgent("retry")
 	case "ctrl+c":
 		return a.quit()
 	case "up", "k", "shift+tab":

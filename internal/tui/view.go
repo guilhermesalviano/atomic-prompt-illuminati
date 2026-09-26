@@ -174,7 +174,7 @@ func (a *App) renderHeader(w int) string {
 // --- sidebar ----------------------------------------------------------------
 
 func (a *App) renderSidebar(w, h int) string {
-	inner := max(1, w - 4)
+	inner := max(1, w-4)
 	rows := h - 2
 	title := "WORKTREES"
 	if n := len(a.entries); n > 0 {
@@ -291,7 +291,7 @@ func (a *App) entryStateText(e *Entry) string {
 // --- main pane --------------------------------------------------------------
 
 func (a *App) renderMain(w, h int) string {
-	inner := max(1, w - 4)
+	inner := max(1, w-4)
 	rows := h - 2
 	e := a.current()
 	if e == nil {
@@ -546,9 +546,12 @@ func (a *App) renderGate(e *Entry, w int) []string {
 	var title string
 	var chips []string
 	switch e.Gate.kind {
+	case gateRetry:
+		title = strings.ToUpper(e.Gate.step) + " FAILED"
+		chips = []string{chip("t", "retry", cGreen), chip("s", "stop", cRed), chip("p", "push", cCyan)}
 	case gateAgent:
-		title = fmt.Sprintf("%s AGENT FAILED — choose another adapter", strings.ToUpper(string(e.Gate.agentKind)))
-		chips = []string{chip("↑↓", "choose", cCyan), chip("enter", "use", cGreen), chip("esc", "abort", cRed)}
+		title = fmt.Sprintf("%s FAILED — retry or change agent", strings.ToUpper(string(e.Gate.agentKind)))
+		chips = []string{chip("t", "retry", cGreen), chip("↑↓", "choose", cCyan), chip("enter", "use", cGreen), chip("esc", "stop", cRed)}
 	case gatePlan:
 		title = "PLAN READY — approve to start the executor"
 		chips = []string{chip("a", "approve", cGreen), chip("r", "reject", cRed)}
@@ -588,10 +591,15 @@ func (a *App) renderGate(e *Entry, w int) []string {
 			}
 			lines = append(lines, bar+mark+style.Render(truncate(label, w-4)))
 		}
-		lines = append(lines, bar+truncate(strings.Join(chips, "   "), w-2))
+		for _, line := range packHints(chips, max(1, w-2)) {
+			lines = append(lines, bar+line)
+		}
 		return lines
 	}
 	lines := []string{bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2))}
+	if e.Gate.kind == gateRetry && e.Gate.cause != nil {
+		lines = append(lines, bar+redStyle.Render(truncate(sanitize(e.Gate.cause.Error()), w-2)))
+	}
 	for _, line := range packHints(chips, max(1, w-2)) {
 		lines = append(lines, bar+line)
 	}
@@ -726,7 +734,7 @@ func (a *App) renderFooter(w int) string {
 		if e.Run != nil && e.Run.InPlace {
 			message = "Removes run history; keeps your checkout and branch."
 		}
-		lines := []string{redStyle.Bold(true).Render("⚠ Delete "+e.branch()+"?")}
+		lines := []string{redStyle.Bold(true).Render("⚠ Delete " + e.branch() + "?")}
 		lines = append(lines, wrap(message, max(1, w-4))...)
 		if e.Run != nil && !e.Run.InPlace && e.Run.Commit != "" && !e.Run.Pushed {
 			lines = append(lines, amberStyle.Render("Commit "+shortSHA(e.Run.Commit)+" was never pushed and will be lost."))
@@ -753,7 +761,7 @@ func (a *App) renderFooter(w int) string {
 	if a.inputFocus {
 		border = cGold
 	}
-	avail := max(1, w - 4)
+	avail := max(1, w-4)
 	nameActive := a.inputFocus && a.field == fieldName
 	promptActive := a.inputFocus && a.field == fieldPrompt
 	body := inputLine("name", string(a.inputName), nameActive, "blank: current checkout", avail) + "\n" +
@@ -767,11 +775,13 @@ func (a *App) renderFooter(w int) string {
 	case a.showSidebar && w < 80 && !a.inputFocus:
 		hints = []string{keyHint("↑↓", "select"), keyHint("enter", "open"), keyHint("b/esc", "close"), keyHint("q", "quit")}
 	case a.inputFocus:
-		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("esc", "back"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear")}
+		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("esc", "back"), keyHint("ctrl+p", "push"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear")}
 	case e != nil && e.Gate != nil:
 		switch {
 		case e.Gate.kind == gateAgent:
-			hints = []string{keyHint("↑↓", "choose"), keyHint("enter", "use"), keyHint("esc", "abort")}
+			hints = []string{keyHint("t", "retry"), keyHint("↑↓", "choose"), keyHint("enter", "use"), keyHint("esc", "stop")}
+		case e.Gate.kind == gateRetry:
+			hints = []string{keyHint("t", "retry"), keyHint("s", "stop")}
 		case e.Gate.kind == gatePlan:
 			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
 		case e.Gate.kind == gateCommit:
@@ -783,9 +793,12 @@ func (a *App) renderFooter(w int) string {
 		default:
 			hints = []string{keyHint("f", "fix"), keyHint("r", "reject")}
 		}
+		if e.Gate.kind != gateCommit {
+			hints = append(hints, keyHint("p", "commit+push"))
+		}
 		hints = append(hints, keyHint("b", "runs"), keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
 	default:
-		hints = []string{keyHint("n", "new"), keyHint("b", "runs"), keyHint("m", "models"), keyHint("tab", "views"), keyHint("↑↓", "select"),
+		hints = []string{keyHint("n", "new"), keyHint("b", "runs"), keyHint("p", "commit+push"), keyHint("m", "models"), keyHint("tab", "views"), keyHint("↑↓", "select"),
 			keyHint("pgup/pgdn", "scroll"), a.diffHint()}
 		if e != nil && !e.Live {
 			hints = append(hints, keyHint("x", "delete"))

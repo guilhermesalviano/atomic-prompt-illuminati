@@ -165,7 +165,7 @@ func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, o
 		fmt.Fprintf(p.out, "  %d%s %s\n", i+1, mark, o)
 	}
 	for {
-		fmt.Fprintf(p.out, "Choose an agent [1-%d, name, or enter to abort]: ", len(options))
+		fmt.Fprintf(p.out, "Choose an agent [1-%d, name, t to retry, or enter to stop]: ", len(options))
 		line, err := p.in.ReadString('\n')
 		if err != nil && line == "" {
 			if err == io.EOF {
@@ -174,6 +174,9 @@ func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, o
 			return "", err
 		}
 		key := strings.ToLower(strings.TrimSpace(line))
+		if key == "t" {
+			return "retry", nil
+		}
 		if key == "" {
 			return "", nil
 		}
@@ -184,6 +187,15 @@ func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, o
 		}
 		fmt.Fprintln(p.out, "unrecognized input")
 	}
+}
+
+func (p *Plain) RetryGate(_ context.Context, step string, cause error) (bool, error) {
+	if p.autoApprove {
+		return false, nil
+	}
+	fmt.Fprintf(p.out, "\n%s failed: %v\n", step, cause)
+	d, err := p.ask("[t] retry this step / [s] stop: ", map[string]Decision{"t": Approve, "s": Reject, "": Reject})
+	return d == Approve, err
 }
 
 func (p *Plain) ask(prompt string, opts map[string]Decision) (Decision, error) {

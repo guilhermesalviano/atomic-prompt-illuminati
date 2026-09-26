@@ -104,6 +104,7 @@ func TestDeleteWarnsAboutUnpushedCommit(t *testing.T) {
 
 func TestSidebarShowsKoalaWhenItFits(t *testing.T) {
 	a, _ := finishedApp(t)
+	a.showSidebar = true
 	a.width, a.height = 120, 40
 	if !strings.Contains(a.View(), "▄█▄") {
 		t.Fatalf("a tall sidebar should show the koala:\n%s", a.View())

@@ -255,7 +255,7 @@ func TestExecutorFallsBackOnFailure(t *testing.T) {
 	}
 }
 
-func TestDefaultBranchFromCurrentBranch(t *testing.T) {
+func TestNamedBranchCollision(t *testing.T) {
 	repo := setupRepo(t)
 	cfg := baseConfig(t, repo)
 	gate := &recordingGate{}
@@ -278,24 +278,22 @@ func TestDefaultBranchFromCurrentBranch(t *testing.T) {
 		return nil, nil
 	}
 
-	// First run without a name lands on main-2 (setupRepo inits with -b main,
-	// and the existing main branch forces the -2 collision suffix).
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
+	// A named run creates its requested branch.
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "feature"}, Gate: gate, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if p.Run.Branch != "main-2" {
-		t.Fatalf("branch = %q, want main-2", p.Run.Branch)
+	if p.Run.Branch != "feature" {
+		t.Fatalf("branch = %q, want feature", p.Run.Branch)
 	}
 
-	// A second nameless run must not collide: main-2 is kept on success, so
-	// the user is asked and (answering create) lands on main-3.
-	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature again"}, Gate: gate, AgentFactory: factory}
+	// Choosing create on a collision keeps the old branch and uses a suffix.
+	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature again", Name: "feature"}, Gate: gate, AgentFactory: factory}
 	if err := p2.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if p2.Run.Branch != "main-3" {
-		t.Fatalf("branch = %q, want main-3", p2.Run.Branch)
+	if p2.Run.Branch != "feature-2" {
+		t.Fatalf("branch = %q, want feature-2", p2.Run.Branch)
 	}
 	if gate.worktreeGates != 1 {
 		t.Fatalf("worktree gate ran %d times, want 1", gate.worktreeGates)
@@ -342,8 +340,8 @@ func TestReuseExistingWorktree(t *testing.T) {
 	cfg := baseConfig(t, repo)
 	factory := passFactory(t)
 
-	// A first nameless run creates the main-2 worktree and keeps it.
-	p1 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "first feature"}, Gate: &reuseGate{}, AgentFactory: factory}
+	// A named run creates the main-2 worktree and keeps it.
+	p1 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "first feature", Name: "main-2"}, Gate: &reuseGate{}, AgentFactory: factory}
 	if err := p1.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -351,9 +349,9 @@ func TestReuseExistingWorktree(t *testing.T) {
 		t.Fatalf("first branch = %q, want main-2", p1.Run.Branch)
 	}
 
-	// A second nameless run is asked and reuses main-2 and its worktree.
+	// A second run with the same name can reuse its worktree.
 	gate := &reuseGate{reuse: true}
-	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "second feature"}, Gate: gate, AgentFactory: factory}
+	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "second feature", Name: "main-2"}, Gate: gate, AgentFactory: factory}
 	if err := p2.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -383,7 +381,7 @@ func TestReuseBranchAfterWorktreeRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "again"}, Gate: &reuseGate{reuse: true}, AgentFactory: passFactory(t)}
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "again", Name: "main-2"}, Gate: &reuseGate{reuse: true}, AgentFactory: passFactory(t)}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}

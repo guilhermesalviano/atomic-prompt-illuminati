@@ -2,14 +2,14 @@
 
 **kor** is a terminal orchestrator for AI coding agents. It takes a prompt and runs a
 plan → execute → review pipeline, each stage powered by the agent of your choice,
-inside an isolated git worktree.
+in your current checkout or an isolated git worktree.
 
 - **Plan** with [Claude](https://claude.com)
 - **Execute** with [Codex](https://openai.com/codex)
 - **Review** with [OpenCode](https://opencode.ai)
 
-Your main checkout stays untouched — kor works in a worktree and only applies changes
-(or opens a PR) when the review passes.
+Leave the run name blank to work directly on your current branch. Enter a new
+branch name to work in an isolated worktree instead.
 
 ## Install
 
@@ -26,8 +26,18 @@ Requires Go 1.22+ and the agent CLIs you want to use (`claude`, `codex`, `openco
 kor run "add pagination to the users list"
 ```
 
-kor plans the change, executes it in an isolated worktree, and has a reviewer agent
-check the diff. Approve in the TUI to apply the result to your branch.
+kor plans the change, edits your current checkout, and has a reviewer agent check
+the diff. After review, choose to commit, commit and push, or leave changes staged.
+
+Use `kor run --name my-feature "your prompt"` for an isolated branch and worktree.
+Using the current branch's name also works directly in its existing checkout.
+Failed or cancelled runs preserve that checkout and any edits; cleaning an
+in-place run removes only its run history. A detached HEAD requires a branch name.
+
+The dashboard starts with the left sidebar closed. Press `b` to toggle the run
+list. On narrow terminals it opens at full width: use `↑↓` to select a run and
+`enter` to open it, or `b`/`esc` to close the list. Use `tab` or `1`–`4` for
+Activity, Plan, Review, and Diff; `n` starts a prompt and `m` opens model selection.
 
 ## Commands
 
