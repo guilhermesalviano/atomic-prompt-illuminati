@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
-	"github.com/guibs/atomic-prompt-illuminati/internal/preflight"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/pipeline"
+	"github.com/guilhermesalviano/korchestrate/internal/preflight"
 )
 
 func newListCmd(artifactsDir *string) *cobra.Command {

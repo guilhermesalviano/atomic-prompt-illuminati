@@ -1,4 +1,4 @@
-module github.com/guibs/atomic-prompt-illuminati
+module github.com/guilhermesalviano/korchestrate
 
 go 1.22.2
 

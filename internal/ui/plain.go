@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // Plain is a line-oriented Gate used when stdin is not a terminal or the TUI is

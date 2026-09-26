@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
 )
 
 // opencodeDiscoverTimeout bounds the `opencode models --verbose` call.

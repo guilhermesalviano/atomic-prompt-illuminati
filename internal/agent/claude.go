@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // Claude adapts the `claude` CLI. It is used for planning and runs read-only.

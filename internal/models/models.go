@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
 )
 
 // Choice is one stage's provider/model/effort selection. Agent is the adapter

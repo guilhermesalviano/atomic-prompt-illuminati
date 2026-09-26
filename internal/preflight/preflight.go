@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
+	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
 // Check is one preflight assertion.

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_NAME="prompter-illuminati"
-BINARY_NAME="api"
+PROJECT_NAME="korchestrate"
+BINARY_NAME="kor"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
-STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/atomic-prompt-illuminati"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/api"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/korchestrate"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kor"
 
 REMOVE_DATA=0
 ASSUME_YES="${ASSUME_YES:-0}"
@@ -100,7 +100,7 @@ else
   [ -d "$STATE_DIR" ] && warn "Run state kept in ${STATE_DIR} (re-run with --data to remove)."
 fi
 
-# Branches created by runs (api/<branch> or custom names) are left untouched;
+# Branches created by runs (branch names or custom names) are left untouched;
 # delete them manually with 'git branch -d <name>' if no longer wanted.
 
 say "Done. ${PROJECT_NAME} uninstalled."

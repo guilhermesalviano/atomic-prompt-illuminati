@@ -17,13 +17,13 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
-	"github.com/guibs/atomic-prompt-illuminati/internal/models"
-	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
-	"github.com/guibs/atomic-prompt-illuminati/internal/tui"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/pipeline"
+	"github.com/guilhermesalviano/korchestrate/internal/tui"
+	"github.com/guilhermesalviano/korchestrate/internal/ui"
 )
 
 func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
@@ -90,7 +90,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to api/<current-branch>)")
+	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to <current-branch>)")
 	cmd.Flags().StringVar(&planPath, "plan", "", "path to an existing plan JSON; skips the planner stage")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
@@ -151,7 +151,7 @@ func newDashboardCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 	return cmd
 }
 
-// runDashboardDefault is shared by the root command and `api tui`.
+// runDashboardDefault is shared by the root command and `kor tui`.
 func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir string, allowDirty, keepWT, apply bool) error {
 	if !isTTY() {
 		return cmd.Help()
@@ -234,7 +234,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 	mu.Unlock()
 	cancel()
 	if !waitTimeout(&wg, 15*time.Second) {
-		fmt.Fprintln(os.Stderr, "api: timed out waiting for in-flight runs to stop")
+		fmt.Fprintln(os.Stderr, "kor: timed out waiting for in-flight runs to stop")
 	}
 	if runErr != nil {
 		return runErr

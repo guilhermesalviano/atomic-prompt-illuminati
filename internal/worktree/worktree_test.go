@@ -43,7 +43,7 @@ func TestWorktreeLifecycle(t *testing.T) {
 
 	parent := t.TempDir()
 	wt := filepath.Join(parent, "wt")
-	branch := "api/test-run"
+	branch := "test-run"
 	if err := Add(repo, wt, branch, ""); err != nil {
 		t.Fatal(err)
 	}

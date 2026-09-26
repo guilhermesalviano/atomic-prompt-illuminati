@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 func adapterFor(name string) (agent.Agent, error) {

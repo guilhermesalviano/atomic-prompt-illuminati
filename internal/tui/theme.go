@@ -6,7 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	colorful "github.com/lucasb-eyer/go-colorful"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
 )
 
 // Palette. Every color adapts to light and dark terminals.

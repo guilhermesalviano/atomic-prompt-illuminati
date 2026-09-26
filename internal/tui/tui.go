@@ -16,14 +16,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"gopkg.in/yaml.v3"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
-	"github.com/guibs/atomic-prompt-illuminati/internal/models"
-	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/pipeline"
+	"github.com/guilhermesalviano/korchestrate/internal/ui"
+	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
 // tab is one of the detail views for the selected run.

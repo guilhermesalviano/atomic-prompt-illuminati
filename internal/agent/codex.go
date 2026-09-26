@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // Codex adapts the `codex exec` CLI. It is used as the executor.

@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // Decision is the user's answer at a gate.

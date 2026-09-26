@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // OpenCode adapts the `opencode run` CLI. It is used as the reviewer.

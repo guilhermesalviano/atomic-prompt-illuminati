@@ -9,11 +9,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/ui"
 )
 
 func testConfig() *config.Config {

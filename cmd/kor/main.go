@@ -1,4 +1,4 @@
-// Command api is the atomic prompt illuminati orchestrator: it plans with
+// Command kor is the korchestrate orchestrator: it plans with
 // claude, executes with codex and reviews with opencode, all inside an isolated
 // git worktree.
 package main
@@ -15,7 +15,7 @@ const version = "0.1.0"
 func main() {
 	root := newRootCmd()
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "api: "+err.Error())
+		fmt.Fprintln(os.Stderr, "kor: "+err.Error())
 		os.Exit(1)
 	}
 }
@@ -28,8 +28,8 @@ func newRootCmd() *cobra.Command {
 	)
 
 	root := &cobra.Command{
-		Use:           "api",
-		Short:         "atomic prompt illuminati — plan/execute/review agent orchestrator",
+		Use:           "kor",
+		Short:         "korchestrate — plan/execute/review agent orchestrator",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -37,7 +37,7 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	root.PersistentFlags().StringVar(&configPath, "config", "", "path to api.yaml (defaults to ./api.yaml or ~/.config/api/config.yaml)")
+	root.PersistentFlags().StringVar(&configPath, "config", "", "path to kor.yaml (defaults to ./kor.yaml or ~/.config/kor/config.yaml)")
 	root.PersistentFlags().StringVar(&repo, "repo", ".", "target git repository")
 	root.PersistentFlags().StringVar(&artifactsDir, "artifacts-dir", "", "override the run artifacts directory")
 
@@ -57,9 +57,9 @@ func newRootCmd() *cobra.Command {
 func newVersionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "print the api version",
+		Short: "print the kor version",
 		Run: func(cmd *cobra.Command, _ []string) {
-			fmt.Fprintln(cmd.OutOrStdout(), "api "+version)
+			fmt.Fprintln(cmd.OutOrStdout(), "kor "+version)
 		},
 	}
 }

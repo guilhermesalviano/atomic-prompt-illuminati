@@ -10,8 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
 )
 
 // setupPage is how many rows pgup/pgdn jump in the model list.
@@ -383,7 +383,7 @@ func (a *App) renderSetupProvider(w int) []string {
 func (a *App) renderSetupModel(w, h int) []string {
 	c := a.choiceFor(a.setup.stage)
 	list := a.setupModelList(c.Agent)
-	lines := []string{a.setupTitle("model") + mutedStyle.Render("  ·  " + c.Agent), ""}
+	lines := []string{a.setupTitle("model") + mutedStyle.Render("  ·  "+c.Agent), ""}
 
 	rows := min(max(h-10, 3), 16)
 	filter := string(a.setup.filter)
@@ -435,7 +435,7 @@ func (a *App) renderSetupModel(w, h int) []string {
 func (a *App) renderSetupEffort(w int) []string {
 	c := a.choiceFor(a.setup.stage)
 	mi := a.catalog.Find(c.Agent, c.Model)
-	lines := []string{a.setupTitle("effort") + mutedStyle.Render("  ·  " + c.Model), ""}
+	lines := []string{a.setupTitle("effort") + mutedStyle.Render("  ·  "+c.Model), ""}
 
 	options := a.setupOptions()
 	for i, opt := range options {

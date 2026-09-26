@@ -4,8 +4,8 @@
 *.test
 *.out
 
-# Local api config and run artifacts
-/api.yaml
+# Local kor config and run artifacts
+/kor.yaml
 /runs/
 
 # Test / coverage output

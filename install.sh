@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROJECT_NAME="prompter-illuminati"
-BINARY_NAME="api"
-MAIN_PKG="./cmd/api"
+PROJECT_NAME="korchestrate"
+BINARY_NAME="kor"
+MAIN_PKG="./cmd/kor"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }

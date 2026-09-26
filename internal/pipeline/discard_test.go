@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
 func TestDiscardRemovesWorktreeBranchAndArtifacts(t *testing.T) {
@@ -15,7 +15,7 @@ func TestDiscardRemovesWorktreeBranchAndArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.Branch = "api/thing"
+	r.Branch = "thing"
 	r.Worktree = filepath.Join(t.TempDir(), "wt")
 	if err := worktree.Add(repo, r.Worktree, r.Branch, ""); err != nil {
 		t.Fatal(err)

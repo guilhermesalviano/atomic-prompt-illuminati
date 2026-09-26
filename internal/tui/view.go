@@ -8,9 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
 )
 
 const (
@@ -636,7 +636,7 @@ func (a *App) welcome(w, h int) []string {
 		out = append(out, gradient(l, gradFrom, gradTo, true))
 	}
 	out = append(out, "",
-		gradient("prompter illuminati", gradFrom, gradTo, true),
+		gradient("korchestrate", gradFrom, gradTo, true),
 		mutedStyle.Render("one prompt · three minds · isolated worktree"),
 		"",
 		lipgloss.NewStyle().Foreground(cViolet).Render("plan")+faintStyle.Render(" ━▶ ")+

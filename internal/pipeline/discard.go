@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
 // Discard deletes everything a finished run left behind: its worktree, its

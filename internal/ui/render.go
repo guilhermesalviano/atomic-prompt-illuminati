@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
 )
 
 // RenderPlan formats a plan as human-readable text.

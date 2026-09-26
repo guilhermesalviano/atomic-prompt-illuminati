@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/models"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/models"
 )
 
 func TestApplyChoices(t *testing.T) {

@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
-	"github.com/guibs/atomic-prompt-illuminati/internal/preflight"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/preflight"
+	"github.com/guilhermesalviano/korchestrate/internal/ui"
+	"github.com/guilhermesalviano/korchestrate/internal/worktree"
 )
 
 // Options controls a single pipeline run.
@@ -27,7 +27,7 @@ type Options struct {
 	Plan *contracts.Plan
 	// Name is the optional worktree/branch name for a new run. When set, the
 	// branch is created with this name verbatim. When empty, the branch
-	// defaults to api/<current-branch> (e.g. api/main), suffixed -2, -3, ...
+	// defaults to <current-branch>, suffixed -2, -3, ...
 	// while taken. It is ignored when resuming a run, whose branch is already
 	// recorded.
 	Name         string
@@ -346,7 +346,7 @@ func (p *Pipeline) fixInstruction(review *contracts.Review) string {
 }
 
 // defaultBranch derives a branch name for runs started without an explicit
-// worktree name: api/<current-branch> (e.g. api/main), with a -2, -3, ...
+// worktree name: <current-branch> (e.g. main), with a -2, -3, ...
 // suffix while that name is already taken. A detached HEAD falls back to the
 // run ID, which is unique by construction.
 func (p *Pipeline) defaultBranch(runID string) (string, error) {
@@ -355,11 +355,11 @@ func (p *Pipeline) defaultBranch(runID string) (string, error) {
 		return "", err
 	}
 	if cur == "" || cur == "HEAD" {
-		return "api/" + runID, nil
+		return runID, nil
 	}
-	base := "api/" + cur
+	base := cur
 	if err := worktree.ValidBranch(p.Opts.Repo, base); err != nil {
-		base = "api/" + artifact.Slug(cur, 40)
+		base = artifact.Slug(cur, 40)
 	}
 	branch := base
 	for i := 2; worktree.BranchExists(p.Opts.Repo, branch); i++ {

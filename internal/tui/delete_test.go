@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
 )
 
 // finishedApp returns an app listing three finished runs with the middle one
@@ -14,7 +14,7 @@ func finishedApp(t *testing.T) (*App, *[]string) {
 	t.Helper()
 	a := NewApp(testConfig(), t.TempDir())
 	for _, id := range []string{"a", "b", "c"} {
-		e := entryFromRun(&artifact.Run{ID: id, Branch: "api/" + id, State: artifact.StateDone, Dir: t.TempDir()})
+		e := entryFromRun(&artifact.Run{ID: id, Branch: id, State: artifact.StateDone, Dir: t.TempDir()})
 		a.entries = append(a.entries, e)
 	}
 	a.cursor = 1
@@ -30,7 +30,7 @@ func TestDeleteAsksThenRemovesSelectedRun(t *testing.T) {
 	a, gone := finishedApp(t)
 
 	a.handleKey(key("x"))
-	if a.confirmDel == nil || !strings.Contains(a.View(), "Delete api/b?") {
+	if a.confirmDel == nil || !strings.Contains(a.View(), "Delete b?") {
 		t.Fatalf("x should ask for confirmation:\n%s", a.View())
 	}
 	_, cmd := a.handleKey(key("y"))

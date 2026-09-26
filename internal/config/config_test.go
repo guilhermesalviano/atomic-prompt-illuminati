@@ -22,7 +22,7 @@ func TestDefault(t *testing.T) {
 
 func TestLoadOverridesAndRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "api.yaml")
+	path := filepath.Join(dir, "kor.yaml")
 	content := `
 repo: /tmp/x
 models:

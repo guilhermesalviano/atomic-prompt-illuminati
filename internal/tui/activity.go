@@ -11,7 +11,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
 )
 
 // logLevel controls how an activity line is styled.

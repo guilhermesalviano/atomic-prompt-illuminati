@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
-	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
-	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/artifact"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/contracts"
+	"github.com/guilhermesalviano/korchestrate/internal/ui"
 )
 
 type fakeAgent struct {
@@ -274,22 +274,23 @@ func TestDefaultBranchFromCurrentBranch(t *testing.T) {
 		return nil, nil
 	}
 
-	// First run without a name lands on api/main (setupRepo inits with -b main).
+	// First run without a name lands on main-2 (setupRepo inits with -b main,
+	// and the existing main branch forces the -2 collision suffix).
 	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature"}, Gate: gate, AgentFactory: factory}
 	if err := p.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if p.Run.Branch != "api/main" {
-		t.Fatalf("branch = %q, want api/main", p.Run.Branch)
+	if p.Run.Branch != "main-2" {
+		t.Fatalf("branch = %q, want main-2", p.Run.Branch)
 	}
 
-	// A second nameless run must not collide: api/main is kept on success.
+	// A second nameless run must not collide: main-2 is kept on success.
 	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature again"}, Gate: gate, AgentFactory: factory}
 	if err := p2.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if p2.Run.Branch != "api/main-2" {
-		t.Fatalf("branch = %q, want api/main-2", p2.Run.Branch)
+	if p2.Run.Branch != "main-3" {
+		t.Fatalf("branch = %q, want main-3", p2.Run.Branch)
 	}
 }
 

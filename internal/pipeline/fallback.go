@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
-	"github.com/guibs/atomic-prompt-illuminati/internal/config"
+	"github.com/guilhermesalviano/korchestrate/internal/agent"
+	"github.com/guilhermesalviano/korchestrate/internal/config"
 )
 
 // agentChoice is a resolved adapter plus the model to invoke it with.

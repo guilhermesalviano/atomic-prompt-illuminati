@@ -1,4 +1,4 @@
-// Package config loads and defaults the api orchestrator configuration.
+// Package config loads and defaults the kor orchestrator configuration.
 package config
 
 import (
@@ -131,17 +131,17 @@ func Default() *Config {
 	return c
 }
 
-// DefaultArtifactsDir returns ~/.local/state/atomic-prompt-illuminati/runs.
+// DefaultArtifactsDir returns ~/.local/state/korchestrate/runs.
 func DefaultArtifactsDir() string {
 	base := os.Getenv("XDG_STATE_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return filepath.Join(os.TempDir(), "api-runs")
+			return filepath.Join(os.TempDir(), "kor-runs")
 		}
 		base = filepath.Join(home, ".local", "state")
 	}
-	return filepath.Join(base, "atomic-prompt-illuminati", "runs")
+	return filepath.Join(base, "korchestrate", "runs")
 }
 
 // Load reads a YAML config file, merging it over defaults. A missing path is
@@ -165,16 +165,16 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
-// Discover looks for api.yaml in repo then in the user config dir.
+// Discover looks for kor.yaml in repo then in the user config dir.
 func Discover(repo string) (path string) {
 	candidates := []string{}
 	if repo != "" {
-		candidates = append(candidates, filepath.Join(repo, "api.yaml"))
+		candidates = append(candidates, filepath.Join(repo, "kor.yaml"))
 	}
 	if base := os.Getenv("XDG_CONFIG_HOME"); base != "" {
-		candidates = append(candidates, filepath.Join(base, "api", "config.yaml"))
+		candidates = append(candidates, filepath.Join(base, "kor", "config.yaml"))
 	} else if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".config", "api", "config.yaml"))
+		candidates = append(candidates, filepath.Join(home, ".config", "kor", "config.yaml"))
 	}
 	for _, cand := range candidates {
 		if _, err := os.Stat(cand); err == nil {
