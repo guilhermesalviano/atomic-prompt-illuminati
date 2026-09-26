@@ -14,11 +14,13 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"gopkg.in/yaml.v3"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
 	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
 	"github.com/guibs/atomic-prompt-illuminati/internal/config"
 	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
+	"github.com/guibs/atomic-prompt-illuminati/internal/models"
 	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
 	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
 )
@@ -51,13 +53,20 @@ const maxLogs = 1000
 // that pipeline runs use as their ui.Gate.
 type App struct {
 	// OnStart is called when the user submits a prompt. Implementations should
-	// run the pipeline and call Session.Finish when done.
-	OnStart func(s *Session, name, prompt string)
+	// run the pipeline with the chosen provider/model/effort setup and call
+	// Session.Finish when done.
+	OnStart func(s *Session, name, prompt string, choices models.Choices)
 
 	cfg     *config.Config
 	entries []*Entry
 	cursor  int
 	listTop int
+
+	// choices is the sticky pre-run provider/model/effort selection, edited
+	// through the setup overlay; catalog backs it with discovered models.
+	choices models.Choices
+	catalog *models.Catalog
+	setup   setupUI
 
 	input      []rune
 	inputName  []rune
@@ -104,6 +113,7 @@ type contentCache struct {
 // NewApp builds the dashboard, loading historical runs from baseDir.
 func NewApp(cfg *config.Config, baseDir string) *App {
 	a := &App{cfg: cfg, width: 100, height: 30, follow: true, showAside: true}
+	a.choices = models.ChoicesFromConfig(cfg)
 	runs, _ := artifact.List(baseDir)
 	for _, r := range runs {
 		a.entries = append(a.entries, entryFromRun(r))
@@ -247,6 +257,7 @@ type Entry struct {
 	Prompt  string
 	Repo    string
 	Name    string
+	Models  models.Choices
 	Live    bool
 	Run     *artifact.Run
 	State   artifact.State
@@ -382,6 +393,22 @@ func (e *Entry) loadArtifacts() {
 			e.Review = &r
 		}
 	}
+	if data, err := e.Run.Read("config.resolved.yaml"); err == nil {
+		var doc struct {
+			Models struct {
+				Planner  config.ModelSpec    `yaml:"planner"`
+				Executor config.ExecutorSpec `yaml:"executor"`
+				Reviewer config.ModelSpec    `yaml:"reviewer"`
+			} `yaml:"models"`
+		}
+		if yaml.Unmarshal(data, &doc) == nil {
+			e.Models = models.Choices{
+				Planner:  models.Choice{Agent: doc.Models.Planner.Agent, Model: doc.Models.Planner.Model, Variant: doc.Models.Planner.Variant},
+				Executor: models.Choice{Agent: doc.Models.Executor.Agent, Model: doc.Models.Executor.Model, Variant: doc.Models.Executor.Variant},
+				Reviewer: models.Choice{Agent: doc.Models.Reviewer.Agent, Model: doc.Models.Reviewer.Model, Variant: doc.Models.Reviewer.Variant},
+			}
+		}
+	}
 }
 
 // ensureLogs replays persisted agent events for runs we did not watch live.
@@ -506,6 +533,9 @@ type (
 		diff  string
 		err   error
 	}
+	catalogMsg struct {
+		catalog *models.Catalog
+	}
 	tickMsg time.Time
 )
 
@@ -534,9 +564,14 @@ func tick() tea.Cmd {
 	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
+// loadCatalog discovers provider/model/effort catalogs off the UI thread.
+func loadCatalog() tea.Msg {
+	return catalogMsg{catalog: models.Discover()}
+}
+
 // Init implements tea.Model.
 func (a *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick()}
+	cmds := []tea.Cmd{tick(), loadCatalog}
 	if a.initial != "" && a.autoRun {
 		cmds = append(cmds, a.startRun(a.initialName, a.initial))
 	} else {
@@ -568,6 +603,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		a.width, a.height = t.Width, t.Height
+		return a, nil
+
+	case catalogMsg:
+		a.catalog = t.catalog
 		return a, nil
 
 	case stageEventMsg:
@@ -660,6 +699,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if a.setup.active {
+		return a.handleSetupKey(msg)
+	}
+
 	if a.inputFocus {
 		switch msg.Type {
 		case tea.KeyEsc:
@@ -717,6 +760,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n", "/", "i":
 		a.inputFocus = true
 		a.field = fieldName
+	case "m":
+		a.setup = setupUI{active: true}
 	case "up", "k":
 		a.move(-1)
 	case "down", "j":
@@ -823,10 +868,13 @@ func (a *App) liveCount() int {
 	return n
 }
 
-// startRun appends a live entry and asks the host to run the pipeline.
+// startRun appends a live entry and asks the host to run the pipeline. The
+// entry snapshots the current model choices so the run keeps displaying what
+// it was started with.
 func (a *App) startRun(name, prompt string) tea.Cmd {
 	e := newEntry(prompt, a.cfg.Repo)
 	e.Name = strings.TrimSpace(name)
+	e.Models = a.choices
 	s := &Session{entry: e, app: a}
 	e.Session = s
 	a.entries = append([]*Entry{e}, a.entries...)
@@ -834,7 +882,7 @@ func (a *App) startRun(name, prompt string) tea.Cmd {
 	a.setTab(tabActivity)
 	return func() tea.Msg {
 		if a.OnStart != nil {
-			a.OnStart(s, e.Name, prompt)
+			a.OnStart(s, e.Name, prompt, a.choices)
 		}
 		return nil
 	}

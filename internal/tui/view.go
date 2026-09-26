@@ -10,6 +10,7 @@ import (
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/agent"
 	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
+	"github.com/guibs/atomic-prompt-illuminati/internal/models"
 )
 
 const (
@@ -21,6 +22,10 @@ const (
 // View implements tea.Model.
 func (a *App) View() string {
 	w, h := max(a.width, 60), max(a.height, 16)
+
+	if a.setup.active {
+		return a.renderSetup(w, h)
+	}
 
 	sideW, mainW, asideW := layout(w)
 	a.asideFits = asideW > 0 // read by the footer's key hints
@@ -405,7 +410,7 @@ func (a *App) stageCard(e *Entry, k agent.Kind, w int) string {
 	inner := w - 2
 	role := lipgloss.NewStyle().Foreground(roleColor[k]).Bold(true).
 		Render(roleGlyph[k] + " " + strings.ToUpper(string(k)))
-	model := mutedStyle.Render(truncate(a.agentName(k)+" · "+a.modelName(k), inner))
+	model := mutedStyle.Render(truncate(choiceText(a.stageChoice(e, k)), inner))
 	status := lipgloss.NewStyle().Foreground(col).Render(truncate(glyph+" "+word, inner))
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -422,7 +427,7 @@ func (a *App) renderFlowVertical(e *Entry, w int) string {
 		role := lipgloss.NewStyle().Foreground(roleColor[k]).Bold(true).
 			Render(fmt.Sprintf("%s %-8s", roleGlyph[k], strings.ToUpper(string(k))))
 		st := lipgloss.NewStyle().Foreground(col).Render(glyph + " " + word)
-		model := mutedStyle.Render(a.modelName(k))
+		model := mutedStyle.Render(a.stageChoice(e, k).Model)
 		rows = append(rows, truncate(role+"  "+st+"  "+model, w))
 		if i < len(stageOrder)-1 {
 			rows = append(rows, faintStyle.Render("  │"))
@@ -463,26 +468,15 @@ func statusWord(status, fallback string) string {
 	return s
 }
 
-func (a *App) agentName(k agent.Kind) string {
-	switch k {
-	case agent.Planner:
-		return a.cfg.Models.Planner.Agent
-	case agent.Executor:
-		return a.cfg.Models.Executor.Agent
-	default:
-		return a.cfg.Models.Reviewer.Agent
+// stageChoice returns the provider/model/effort a run's stage card shows: the
+// run's own snapshot when known, otherwise the session's current selection.
+func (a *App) stageChoice(e *Entry, k agent.Kind) models.Choice {
+	if e != nil {
+		if c := e.Models.For(k); c.Model != "" {
+			return c
+		}
 	}
-}
-
-func (a *App) modelName(k agent.Kind) string {
-	switch k {
-	case agent.Planner:
-		return a.cfg.Models.Planner.Model
-	case agent.Executor:
-		return a.cfg.Models.Executor.Model
-	default:
-		return a.cfg.Models.Reviewer.Model
-	}
+	return a.choices.For(k)
 }
 
 // --- gate, tabs and content ---------------------------------------------------
@@ -633,9 +627,10 @@ func (a *App) welcome(w, h int) []string {
 			lipgloss.NewStyle().Foreground(cCyan).Render("execute")+faintStyle.Render(" ━▶ ")+
 			lipgloss.NewStyle().Foreground(cGold).Render("review"),
 		mutedStyle.Render(fmt.Sprintf("%s · %s · %s",
-			a.cfg.Models.Planner.Model, a.cfg.Models.Executor.Model, a.cfg.Models.Reviewer.Model)),
+			a.choices.Planner.Model, a.choices.Executor.Model, a.choices.Reviewer.Model)),
 		"",
 		textStyle.Render("press ")+goldStyle.Bold(true).Render("n")+textStyle.Render(" and describe a change"),
+		textStyle.Render("press ")+goldStyle.Bold(true).Render("m")+textStyle.Render(" to pick provider · model · effort"),
 	)
 	for i, l := range out {
 		out[i] = lipgloss.PlaceHorizontal(w, lipgloss.Center, l)
@@ -691,7 +686,7 @@ func (a *App) renderFooter(w int) string {
 		}
 		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
 	default:
-		hints = []string{keyHint("n", "new prompt"), keyHint("↑↓", "select"), keyHint("tab", "views"),
+		hints = []string{keyHint("n", "new prompt"), keyHint("m", "models"), keyHint("↑↓", "select"), keyHint("tab", "views"),
 			keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit")}
 	}
 	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)

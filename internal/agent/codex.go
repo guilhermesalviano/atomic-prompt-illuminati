@@ -17,30 +17,7 @@ func (Codex) Name() string { return "codex" }
 func (Codex) Kind() Kind   { return Executor }
 
 func (c Codex) Run(ctx context.Context, r Request) (*Result, error) {
-	args := []string{"exec", "--json", "-m", r.Model}
-	if r.Dir != "" {
-		args = append(args, "-C", r.Dir)
-	}
-	args = append(args, "--skip-git-repo-check")
-	switch {
-	case r.Bypass:
-		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-	case r.ApproveForMe:
-		// --approve-for-me is mutually exclusive with -s; it manages its own
-		// workspace-write sandbox and auto-reviews approvals.
-		args = append(args, "--approve-for-me")
-	default:
-		if r.Sandbox != "" {
-			args = append(args, "-s", r.Sandbox)
-		}
-	}
-	if r.SchemaFile != "" {
-		args = append(args, "--output-schema", r.SchemaFile)
-	}
-	if r.OutFile != "" {
-		args = append(args, "-o", r.OutFile)
-	}
-	args = append(args, r.ExtraArgs...)
+	args := append(buildArgs(r), r.ExtraArgs...)
 	args = append(args, r.Prompt)
 
 	r.Observe.Status(Executor, "codex exec started ("+r.Model+", sandbox="+r.Sandbox+")")
@@ -89,6 +66,39 @@ func (c Codex) Run(ctx context.Context, r Request) (*Result, error) {
 	}
 	r.Observe.Status(Executor, "warning: no structured report from codex; continuing with diff")
 	return res, nil
+}
+
+// buildArgs assembles the `codex exec` arguments up to (but excluding) any
+// extra args and the prompt itself.
+func buildArgs(r Request) []string {
+	args := []string{"exec", "--json", "-m", r.Model}
+	if r.Dir != "" {
+		args = append(args, "-C", r.Dir)
+	}
+	args = append(args, "--skip-git-repo-check")
+	switch {
+	case r.Bypass:
+		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
+	case r.ApproveForMe:
+		// --approve-for-me is mutually exclusive with -s; it manages its own
+		// workspace-write sandbox and auto-reviews approvals.
+		args = append(args, "--approve-for-me")
+	default:
+		if r.Sandbox != "" {
+			args = append(args, "-s", r.Sandbox)
+		}
+	}
+	// Variant is the reasoning effort (codex model_reasoning_effort).
+	if r.Variant != "" {
+		args = append(args, "-c", "model_reasoning_effort="+r.Variant)
+	}
+	if r.SchemaFile != "" {
+		args = append(args, "--output-schema", r.SchemaFile)
+	}
+	if r.OutFile != "" {
+		args = append(args, "-o", r.OutFile)
+	}
+	return args
 }
 
 // lastAgentMessage best-effort extracts the final assistant text from JSONL.

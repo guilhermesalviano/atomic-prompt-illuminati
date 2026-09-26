@@ -5,9 +5,11 @@ models:
   planner:
     agent: claude
     model: opus
+    # variant: reasoning effort; codex -> model_reasoning_effort, opencode -> --variant
   executor:
     agent: codex
     model: gpt-6-sol
+    # variant: high              # codex reasoning effort: low | medium | high | xhigh | max | ultra
     sandbox: workspace-write   # read-only | workspace-write | danger-full-access
     approve_for_me: true
     # bypass: true             # skip codex approvals entirely (only in sandboxes)
@@ -16,6 +18,8 @@ models:
     model: opencode-go/deepseek-v4.1-flash
     variant: high
     subagent: plan             # read-only opencode agent
+  # The dashboard's "m" overlay picks provider/model/effort per stage before a
+  # run starts; values here are the pre-selected defaults.
 
 loop:
   max_iterations: 2
