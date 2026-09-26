@@ -32,6 +32,29 @@ func (d Decision) String() string {
 	}
 }
 
+// WorktreeDecision is the user's answer when a new run's default branch name
+// already exists, usually because a previous run created it.
+type WorktreeDecision int
+
+const (
+	// WorktreeReuse adopts the existing worktree and branch for the new run.
+	WorktreeReuse WorktreeDecision = iota
+	// WorktreeCreate leaves the existing worktree alone and gives the run a
+	// freshly created branch and worktree.
+	WorktreeCreate
+)
+
+func (d WorktreeDecision) String() string {
+	switch d {
+	case WorktreeReuse:
+		return "reuse"
+	case WorktreeCreate:
+		return "create"
+	default:
+		return "unknown"
+	}
+}
+
 // CommitDecision is the user's answer at the publish gate that follows a passed
 // review, once every change has been staged.
 type CommitDecision int
@@ -73,6 +96,9 @@ type Gate interface {
 	// CommitGate presents the staged changes and asks whether to commit,
 	// commit and push, or stop with the changes staged.
 	CommitGate(ctx context.Context, branch, worktree string) (CommitDecision, error)
+	// WorktreeGate asks whether a new run should reuse an existing
+	// worktree/branch or create a new one. branch is the already-taken name.
+	WorktreeGate(ctx context.Context, branch string) (WorktreeDecision, error)
 	// SelectAgent asks the user to pick a replacement adapter after `failed`
 	// could not run a stage. options lists the adapters still untried and
 	// preferred hints at the configured fallback. It returns "" to give up.
@@ -105,6 +131,11 @@ func (a AutoApprove) ReviewGate(_ context.Context, review *contracts.Review, dif
 func (a AutoApprove) CommitGate(_ context.Context, branch, _ string) (CommitDecision, error) {
 	a.Inner.Info("[--yes] committing staged changes on " + branch + " (no push)")
 	return CommitOnly, nil
+}
+
+func (a AutoApprove) WorktreeGate(_ context.Context, branch string) (WorktreeDecision, error) {
+	a.Inner.Info("[--yes] branch " + branch + " already exists; creating a new worktree")
+	return WorktreeCreate, nil
 }
 
 func (a AutoApprove) SelectAgent(_ context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {

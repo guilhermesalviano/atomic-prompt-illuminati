@@ -511,6 +511,9 @@ func (a *App) renderGate(e *Entry, w int) []string {
 	case gateCommit:
 		title = "CHANGES STAGED — commit or push " + e.Gate.branch
 		chips = []string{chip("c", "commit", cGreen), chip("p", "commit + push", cCyan), chip("s", "skip", cMuted)}
+	case gateWorktree:
+		title = "BRANCH " + e.Gate.branch + " ALREADY EXISTS — keep its worktree or create a new one"
+		chips = []string{chip("k", "keep existing", cGreen), chip("c", "create new", cCyan)}
 	case gateReview:
 		if e.Gate.review != nil && e.Gate.review.Pass() {
 			title = "REVIEW PASSED — approve to commit the branch"
@@ -691,7 +694,7 @@ func (a *App) renderFooter(w int) string {
 	avail := w - 8
 	nameActive := a.inputFocus && a.field == fieldName
 	promptActive := a.inputFocus && a.field == fieldPrompt
-	body := inputLine("name", string(a.inputName), nameActive, "worktree name (required)", avail) + "\n" +
+	body := inputLine("name", string(a.inputName), nameActive, "blank uses the current branch", avail) + "\n" +
 		inputLine("prompt", string(a.input), promptActive, "describe the change you want…", avail)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Padding(0, 1).Width(w - 2).Render(body)
@@ -709,6 +712,8 @@ func (a *App) renderFooter(w int) string {
 			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
 		case e.Gate.kind == gateCommit:
 			hints = []string{keyHint("c", "commit"), keyHint("p", "commit + push"), keyHint("s", "skip")}
+		case e.Gate.kind == gateWorktree:
+			hints = []string{keyHint("k", "keep existing"), keyHint("c", "create new")}
 		case e.Gate.review != nil && e.Gate.review.Pass():
 			hints = []string{keyHint("a", "approve"), keyHint("f", "fix"), keyHint("r", "reject")}
 		default:

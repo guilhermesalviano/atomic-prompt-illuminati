@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/guilhermesalviano/korchestrate/internal/agent"
@@ -27,9 +28,10 @@ type Options struct {
 	Plan *contracts.Plan
 	// Name is the optional worktree/branch name for a new run. When set, the
 	// branch is created with this name verbatim. When empty, the branch
-	// defaults to <current-branch>, suffixed -2, -3, ...
-	// while taken. It is ignored when resuming a run, whose branch is already
-	// recorded.
+	// defaults to <current-branch>, suffixed -2, -3, ... while taken; when a
+	// suffixed name is already taken the user is asked whether to reuse that
+	// existing worktree or create a new one. It is ignored when resuming a
+	// run, whose branch is already recorded.
 	Name         string
 	AllowDirty   bool
 	KeepWorktree bool
@@ -56,6 +58,9 @@ type Pipeline struct {
 	Run          *artifact.Run
 	worktreePath string
 	branch       string
+	// reused records that the run adopted a pre-existing worktree/branch the
+	// user chose to keep; such worktrees are never torn down on failure.
+	reused bool
 
 	// overrides remembers adapters the user selected after a stage failure.
 	overrides map[agent.Kind]agentChoice
@@ -120,11 +125,13 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			p.branch = name
 		} else {
 			var derr error
-			p.branch, derr = p.defaultBranch(run.ID)
+			p.branch, p.reused, derr = p.deriveBranch(ctx, run.ID)
 			if derr != nil {
 				return derr
 			}
-			p.Gate.Info("no worktree name given; using branch " + p.branch)
+			if !p.reused {
+				p.Gate.Info("no worktree name given; using branch " + p.branch)
+			}
 		}
 	}
 	if p.worktreePath == "" {
@@ -156,20 +163,34 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}()
 
 	if created {
-		if worktree.BranchExists(p.Opts.Repo, p.branch) {
-			return fmt.Errorf("branch %q already exists; choose another worktree name", p.branch)
+		if p.reused {
+			// The user chose to keep the existing worktree/branch: adopt it
+			// where it lives instead of creating a fresh one.
+			if err := p.adoptWorktree(); err != nil {
+				return err
+			}
+			run.Worktree = p.worktreePath
+			_ = run.Save()
+			if err := run.SetState(artifact.StateWorktree); err != nil {
+				return err
+			}
+			p.Gate.Info("reusing worktree " + p.worktreePath + " on " + p.branch)
+		} else {
+			if worktree.BranchExists(p.Opts.Repo, p.branch) {
+				return fmt.Errorf("branch %q already exists; choose another worktree name", p.branch)
+			}
+			base, err := worktree.Head(p.Opts.Repo)
+			if err != nil {
+				return err
+			}
+			if err := worktree.Add(p.Opts.Repo, p.worktreePath, p.branch, base); err != nil {
+				return err
+			}
+			if err := run.SetState(artifact.StateWorktree); err != nil {
+				return err
+			}
+			p.Gate.Info("worktree " + p.worktreePath + " on " + p.branch)
 		}
-		base, err := worktree.Head(p.Opts.Repo)
-		if err != nil {
-			return err
-		}
-		if err := worktree.Add(p.Opts.Repo, p.worktreePath, p.branch, base); err != nil {
-			return err
-		}
-		if err := run.SetState(artifact.StateWorktree); err != nil {
-			return err
-		}
-		p.Gate.Info("worktree " + p.worktreePath + " on " + p.branch)
 	}
 
 	// --- PLAN -------------------------------------------------------------
@@ -345,32 +366,69 @@ func (p *Pipeline) fixInstruction(review *contracts.Review) string {
 	return review.Summary
 }
 
-// defaultBranch derives a branch name for runs started without an explicit
-// worktree name: <current-branch> (e.g. main), with a -2, -3, ...
-// suffix while that name is already taken. A detached HEAD falls back to the
-// run ID, which is unique by construction.
-func (p *Pipeline) defaultBranch(runID string) (string, error) {
+// deriveBranch picks a branch for a run started without a worktree name:
+// <current-branch> (e.g. main), with a -2, -3, ... suffix while that name is
+// taken. When a suffixed name is already taken — usually by a previous run's
+// worktree — the user is asked whether to reuse it or keep looking for a free
+// name; reuse reports which happened. A detached HEAD falls back to the run ID,
+// which is unique by construction.
+func (p *Pipeline) deriveBranch(ctx context.Context, runID string) (branch string, reuse bool, err error) {
 	cur, err := worktree.CurrentBranch(p.Opts.Repo)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if cur == "" || cur == "HEAD" {
-		return runID, nil
+		return runID, false, nil
 	}
 	base := cur
 	if err := worktree.ValidBranch(p.Opts.Repo, base); err != nil {
 		base = artifact.Slug(cur, 40)
 	}
-	branch := base
-	for i := 2; worktree.BranchExists(p.Opts.Repo, branch); i++ {
-		branch = fmt.Sprintf("%s-%d", base, i)
+	for i := 1; ; i++ {
+		candidate := base
+		if i > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, i)
+		}
+		if !worktree.BranchExists(p.Opts.Repo, candidate) {
+			return candidate, false, nil
+		}
+		// The unsuffixed base is normally the branch checked out in the repo
+		// itself; only suffixed names can belong to a previous run.
+		if i == 1 {
+			continue
+		}
+		d, gerr := p.Gate.WorktreeGate(ctx, candidate)
+		if gerr != nil {
+			return "", false, gerr
+		}
+		if d == ui.WorktreeReuse {
+			return candidate, true, nil
+		}
 	}
-	return branch, nil
 }
 
-// cleanup removes the worktree and branch after a failed or aborted run.
+// adoptWorktree points the run at the existing branch's worktree, creating a
+// new checkout when the branch has none (or its registration is stale).
+func (p *Pipeline) adoptWorktree() error {
+	if wt := worktree.ForBranch(p.Opts.Repo, p.branch); wt != "" {
+		if _, err := os.Stat(wt); err == nil {
+			p.worktreePath = wt
+			return nil
+		}
+		_ = worktree.Prune(p.Opts.Repo)
+	}
+	return worktree.Checkout(p.Opts.Repo, p.worktreePath, p.branch)
+}
+
+// cleanup removes the worktree and branch after a failed or aborted run. A
+// worktree the run reused existed before the run started, so it is always
+// kept, whatever KeepWorktree says.
 func (p *Pipeline) cleanup() {
 	if p.worktreePath == "" || p.branch == "" {
+		return
+	}
+	if p.reused {
+		p.Gate.Info("keeping reused worktree " + p.worktreePath + " (branch " + p.branch + ")")
 		return
 	}
 	if p.Opts.KeepWorktree {

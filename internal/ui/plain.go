@@ -106,6 +106,39 @@ func (p *Plain) askCommit() (CommitDecision, error) {
 	}
 }
 
+// WorktreeGate asks whether to reuse an existing worktree/branch or create a
+// new one when the run's default name is already taken.
+func (p *Plain) WorktreeGate(_ context.Context, branch string) (WorktreeDecision, error) {
+	fmt.Fprintf(p.out, "\n=== WORKTREE ===\nBranch %q already exists from a previous run.\n", branch)
+	if p.autoApprove {
+		fmt.Fprintln(p.out, "[--yes] creating a new worktree")
+		return WorktreeCreate, nil
+	}
+	return p.askWorktree()
+}
+
+func (p *Plain) askWorktree() (WorktreeDecision, error) {
+	opts := map[string]WorktreeDecision{
+		"k": WorktreeReuse, "": WorktreeReuse,
+		"c": WorktreeCreate,
+	}
+	for {
+		fmt.Fprint(p.out, "Keep the existing worktree? [k]eep existing/[c]reate new: ")
+		line, err := p.in.ReadString('\n')
+		if err != nil && line == "" {
+			if err == io.EOF {
+				return WorktreeCreate, nil
+			}
+			return WorktreeCreate, err
+		}
+		key := strings.ToLower(strings.TrimSpace(line))
+		if d, ok := opts[key]; ok {
+			return d, nil
+		}
+		fmt.Fprintln(p.out, "unrecognized input")
+	}
+}
+
 func (p *Plain) SelectAgent(_ context.Context, kind agent.Kind, failed string, options []string, preferred string, cause error) (string, error) {
 	fmt.Fprintf(p.out, "\n=== AGENT FAILURE (%s) ===\n", kind)
 	fmt.Fprintf(p.out, "agent %q could not run: %v\n", failed, cause)

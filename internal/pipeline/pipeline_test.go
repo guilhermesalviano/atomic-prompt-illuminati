@@ -30,8 +30,8 @@ func (f fakeAgent) Run(ctx context.Context, r agent.Request) (*agent.Result, err
 }
 
 type recordingGate struct {
-	planGates, reviewGates int
-	infos                  []string
+	planGates, reviewGates, worktreeGates int
+	infos                                 []string
 }
 
 func (g *recordingGate) Stage(agent.Kind, string) {}
@@ -48,6 +48,10 @@ func (g *recordingGate) ReviewGate(context.Context, *contracts.Review, string) (
 }
 func (g *recordingGate) CommitGate(context.Context, string, string) (ui.CommitDecision, error) {
 	return ui.CommitOnly, nil
+}
+func (g *recordingGate) WorktreeGate(context.Context, string) (ui.WorktreeDecision, error) {
+	g.worktreeGates++
+	return ui.WorktreeCreate, nil
 }
 func (g *recordingGate) SelectAgent(context.Context, agent.Kind, string, []string, string, error) (string, error) {
 	return "", nil
@@ -284,13 +288,110 @@ func TestDefaultBranchFromCurrentBranch(t *testing.T) {
 		t.Fatalf("branch = %q, want main-2", p.Run.Branch)
 	}
 
-	// A second nameless run must not collide: main-2 is kept on success.
+	// A second nameless run must not collide: main-2 is kept on success, so
+	// the user is asked and (answering create) lands on main-3.
 	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature again"}, Gate: gate, AgentFactory: factory}
 	if err := p2.Execute(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if p2.Run.Branch != "main-3" {
 		t.Fatalf("branch = %q, want main-3", p2.Run.Branch)
+	}
+	if gate.worktreeGates != 1 {
+		t.Fatalf("worktree gate ran %d times, want 1", gate.worktreeGates)
+	}
+}
+
+type reuseGate struct {
+	recordingGate
+	reuse bool
+}
+
+func (g *reuseGate) WorktreeGate(context.Context, string) (ui.WorktreeDecision, error) {
+	g.worktreeGates++
+	if g.reuse {
+		return ui.WorktreeReuse, nil
+	}
+	return ui.WorktreeCreate, nil
+}
+
+func passFactory(t *testing.T) func(string) (agent.Agent, error) {
+	t.Helper()
+	return func(name string) (agent.Agent, error) {
+		switch name {
+		case "claude":
+			return fakeAgent{name, agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: planJSON(t)}, nil
+			}}, nil
+		case "codex":
+			return fakeAgent{name, agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"x"}`)}, nil
+			}}, nil
+		case "opencode":
+			return fakeAgent{name, agent.Reviewer, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
+	}
+}
+
+func TestReuseExistingWorktree(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	factory := passFactory(t)
+
+	// A first nameless run creates the main-2 worktree and keeps it.
+	p1 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "first feature"}, Gate: &reuseGate{}, AgentFactory: factory}
+	if err := p1.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if p1.Run.Branch != "main-2" {
+		t.Fatalf("first branch = %q, want main-2", p1.Run.Branch)
+	}
+
+	// A second nameless run is asked and reuses main-2 and its worktree.
+	gate := &reuseGate{reuse: true}
+	p2 := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "second feature"}, Gate: gate, AgentFactory: factory}
+	if err := p2.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if p2.Run.Branch != "main-2" {
+		t.Fatalf("second branch = %q, want the reused main-2", p2.Run.Branch)
+	}
+	if p2.Run.Worktree != p1.Run.Worktree {
+		t.Fatalf("worktree = %q, want the reused %q", p2.Run.Worktree, p1.Run.Worktree)
+	}
+	if gate.worktreeGates != 1 {
+		t.Fatalf("worktree gate ran %d times, want 1", gate.worktreeGates)
+	}
+	if _, err := os.Stat(filepath.Join(p2.Run.Worktree, "feature.txt")); err != nil {
+		t.Errorf("reused worktree missing feature.txt: %v", err)
+	}
+}
+
+func TestReuseBranchAfterWorktreeRemoved(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+
+	// A leftover main-2 branch whose worktree directory was deleted without
+	// git knowing: the registration is stale.
+	stale := filepath.Join(t.TempDir(), "stale")
+	gitRun(t, repo, "worktree", "add", "-b", "main-2", stale, "HEAD")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "again"}, Gate: &reuseGate{reuse: true}, AgentFactory: passFactory(t)}
+	if err := p.Execute(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if p.Run.Branch != "main-2" {
+		t.Fatalf("branch = %q, want the reused main-2", p.Run.Branch)
+	}
+	if p.Run.Worktree != p.Run.Path("worktree") {
+		t.Fatalf("worktree = %q, want a fresh checkout at %q", p.Run.Worktree, p.Run.Path("worktree"))
 	}
 }
 

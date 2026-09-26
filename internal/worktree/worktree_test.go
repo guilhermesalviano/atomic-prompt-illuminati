@@ -103,6 +103,37 @@ func TestHeadAndClean(t *testing.T) {
 	}
 }
 
+func TestForBranchAndCheckout(t *testing.T) {
+	repo := setupRepo(t)
+
+	parent := t.TempDir()
+	wt := filepath.Join(parent, "wt")
+	if err := Add(repo, wt, "linked", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := ForBranch(repo, "linked"); got != wt {
+		t.Fatalf("ForBranch(linked) = %q, want %q", got, wt)
+	}
+	// The main worktree is never returned: runs must not adopt the user's
+	// own checkout.
+	if got := ForBranch(repo, "main"); got != "" {
+		t.Fatalf("ForBranch(main) = %q, want empty", got)
+	}
+	if got := ForBranch(repo, "missing"); got != "" {
+		t.Fatalf("ForBranch(missing) = %q, want empty", got)
+	}
+
+	// A branch without a worktree gets one via Checkout.
+	gitRun(t, repo, "branch", "plain")
+	wt2 := filepath.Join(parent, "wt2")
+	if err := Checkout(repo, wt2, "plain"); err != nil {
+		t.Fatal(err)
+	}
+	if got := ForBranch(repo, "plain"); got != wt2 {
+		t.Fatalf("ForBranch(plain) = %q, want %q", got, wt2)
+	}
+}
+
 func TestCurrentBranch(t *testing.T) {
 	repo := setupRepo(t)
 	branch, err := CurrentBranch(repo)

@@ -59,6 +59,47 @@ func Add(repo, path, branch, base string) error {
 	return err
 }
 
+// Checkout creates a worktree at path on the existing branch.
+func Checkout(repo, path, branch string) error {
+	_, err := git(repo, "worktree", "add", path, branch)
+	return err
+}
+
+// ForBranch returns the path of the linked worktree that has branch checked
+// out, or "" when the branch is not checked out in any linked worktree. The
+// main worktree (the repository itself) never counts: runs must not adopt the
+// user's own checkout.
+func ForBranch(repo, branch string) string {
+	out, err := git(repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return ""
+	}
+	want := "branch refs/heads/" + branch
+	path := ""
+	first := true
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "worktree ") {
+			path = strings.TrimSpace(strings.TrimPrefix(line, "worktree"))
+			if first {
+				path = "" // the main worktree is always listed first
+			}
+			first = false
+			continue
+		}
+		if line == want && path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// Prune drops worktree registrations whose directories no longer exist.
+func Prune(repo string) error {
+	_, err := git(repo, "worktree", "prune")
+	return err
+}
+
 // CurrentBranch returns the branch checked out in repo. It returns "HEAD" when
 // the repo is in a detached-HEAD state.
 func CurrentBranch(repo string) (string, error) {

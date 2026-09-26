@@ -40,7 +40,8 @@ const (
 var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff"}
 
 // inputField selects which footer field receives typing while the input is
-// focused. The worktree name is required, so it comes first.
+// focused. The name comes first; leaving it blank derives the worktree from
+// the current branch.
 type inputField int
 
 const (
@@ -226,6 +227,23 @@ func (s *Session) SelectAgent(ctx context.Context, kind agent.Kind, failed strin
 		return c, nil
 	case <-ctx.Done():
 		return "", ctx.Err()
+	}
+}
+
+// WorktreeGate asks whether to reuse an existing worktree/branch or create a
+// new one; it is the first decision point of a run started without a name.
+func (s *Session) WorktreeGate(ctx context.Context, branch string) (ui.WorktreeDecision, error) {
+	req := &gateReq{
+		kind:          gateWorktree,
+		branch:        branch,
+		worktreeReply: make(chan ui.WorktreeDecision, 1),
+	}
+	s.app.send(gateEventMsg{entry: s.entry, req: req})
+	select {
+	case d := <-req.worktreeReply:
+		return d, nil
+	case <-ctx.Done():
+		return ui.WorktreeCreate, ctx.Err()
 	}
 }
 
@@ -492,6 +510,7 @@ const (
 	gateReview
 	gateCommit
 	gateAgent
+	gateWorktree
 )
 
 type gateReq struct {
@@ -514,6 +533,9 @@ type gateReq struct {
 	cause      error
 	cursor     int
 	agentReply chan string
+
+	// gateWorktree fields: reusing or replacing an existing worktree/branch.
+	worktreeReply chan ui.WorktreeDecision
 }
 
 type (
@@ -751,9 +773,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.inputFocus = false
 		case tea.KeyTab:
 			if a.field == fieldName {
-				if strings.TrimSpace(string(a.inputName)) != "" {
-					a.field = fieldPrompt
-				}
+				a.field = fieldPrompt
 			} else {
 				a.field = fieldName
 			}
@@ -761,16 +781,15 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a.quit()
 		case tea.KeyEnter:
 			if a.field == fieldName {
-				if strings.TrimSpace(string(a.inputName)) != "" {
-					a.field = fieldPrompt
-				}
+				a.field = fieldPrompt
 				return a, nil
 			}
 			name := strings.TrimSpace(string(a.inputName))
 			prompt := strings.TrimSpace(string(a.input))
 			a.input, a.inputName = nil, nil
 			a.inputFocus = false
-			if name != "" && prompt != "" {
+			// A blank name derives the worktree from the current branch.
+			if prompt != "" {
 				return a, a.startRun(name, prompt)
 			}
 		case tea.KeyBackspace:
@@ -793,6 +812,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return a.handleAgentKey(e.Gate, msg)
 		case gateCommit:
 			return a.handleCommitKey(e.Gate, msg)
+		case gateWorktree:
+			return a.handleWorktreeKey(e.Gate, msg)
 		}
 	}
 
@@ -1061,6 +1082,31 @@ func (a *App) handleCommitKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return a, nil
 }
 
+// handleWorktreeKey drives the keep-or-create prompt shown when the run's
+// default branch already exists.
+func (a *App) handleWorktreeKey(g *gateReq, msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return a.quit()
+	case "k", "enter":
+		a.answerWorktree(ui.WorktreeReuse)
+	case "c", "n", "esc":
+		a.answerWorktree(ui.WorktreeCreate)
+	}
+	return a, nil
+}
+
+// answerWorktree resolves a pending keep-or-create worktree prompt.
+func (a *App) answerWorktree(d ui.WorktreeDecision) {
+	e := a.current()
+	if e == nil || e.Gate == nil || e.Gate.kind != gateWorktree || e.Gate.worktreeReply == nil {
+		return
+	}
+	e.Gate.worktreeReply <- d
+	e.Gate = nil
+	e.touch()
+}
+
 // answerCommit resolves a pending publish gate.
 func (a *App) answerCommit(d ui.CommitDecision) {
 	e := a.current()
@@ -1105,7 +1151,7 @@ func (a *App) answer(d ui.Decision) {
 // be approved or rejected; a failed review can only be fixed or rejected.
 func gateAllows(g *gateReq, d ui.Decision) bool {
 	switch g.kind {
-	case gateAgent, gateCommit:
+	case gateAgent, gateCommit, gateWorktree:
 		return false
 	case gatePlan:
 		return d != ui.Fix

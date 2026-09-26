@@ -210,6 +210,36 @@ func TestCommitGateChoices(t *testing.T) {
 	}
 }
 
+func TestWorktreeGateChoices(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	a.width, a.height = 100, 30
+	e := newEntry("x", "/repo")
+	a.entries = []*Entry{e}
+
+	req := &gateReq{kind: gateWorktree, branch: "main-2", worktreeReply: make(chan ui.WorktreeDecision, 1)}
+	e.Gate = req
+	a.answer(ui.Approve)
+	if e.Gate == nil {
+		t.Fatal("approve must not resolve a worktree gate")
+	}
+	a.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	if e.Gate != nil || <-req.worktreeReply != ui.WorktreeCreate {
+		t.Fatal("c should resolve the worktree gate with create")
+	}
+
+	req = &gateReq{kind: gateWorktree, branch: "main-2", worktreeReply: make(chan ui.WorktreeDecision, 1)}
+	e.Gate = req
+	a.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if e.Gate != nil || <-req.worktreeReply != ui.WorktreeReuse {
+		t.Fatal("enter should resolve the worktree gate with reuse")
+	}
+
+	e.Gate = &gateReq{kind: gateWorktree, branch: "main-2"}
+	if v := a.View(); !strings.Contains(v, "main-2") || !strings.Contains(v, "keep existing") {
+		t.Fatalf("view should offer keep-or-create for the existing branch:\n%s", v)
+	}
+}
+
 func TestSummarizeEvent(t *testing.T) {
 	cases := []struct {
 		line string
