@@ -1,8 +1,10 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -86,5 +88,110 @@ func TestValidate(t *testing.T) {
 	c.Models.Executor.Sandbox = "bogus"
 	if err := c.Validate(); err == nil {
 		t.Fatal("expected invalid sandbox error")
+	}
+}
+
+func TestLoadJSON(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	content := `{
+		"models": {
+			"executor": {
+				"agent": "opencode", "model": "provider/custom-model",
+				"approve_for_me": false, "extra_args": ["--verbose"]
+			}
+		},
+		"loop": {"max_iterations": 5},
+		"gates": {"after_plan": false},
+		"timeouts": {"planner": "3m"}
+	}`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Models.Executor.Agent != "opencode" || c.Models.Executor.Model != "provider/custom-model" {
+		t.Fatalf("executor override failed: %+v", c.Models.Executor)
+	}
+	if c.Models.Executor.ApproveForMe || c.Gates.AfterPlan || c.Loop.MaxIterations != 5 {
+		t.Fatalf("JSON overrides not applied: %+v", c)
+	}
+	if !reflect.DeepEqual(c.Models.Executor.ExtraArgs, []string{"--verbose"}) || c.Timeouts.Planner.Duration() != 3*time.Minute {
+		t.Fatalf("JSON arguments or duration not decoded: %+v", c)
+	}
+	d := Default()
+	if !reflect.DeepEqual(c.Models.Planner, d.Models.Planner) || c.Models.Executor.Sandbox != d.Models.Executor.Sandbox {
+		t.Fatalf("unspecified defaults lost: %+v", c.Models)
+	}
+}
+
+func TestDefaultConfigJSON(t *testing.T) {
+	path := filepath.Join("..", "..", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(data) {
+		t.Fatal("default config.json must be valid JSON")
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Models, Default().Models) {
+		t.Fatalf("config.json differs from built-in model defaults: %+v", c.Models)
+	}
+}
+
+func TestDiscover(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		files []string
+		want  string
+	}{
+		{name: "none"},
+		{name: "repo JSON", files: []string{"repo/config.json"}, want: "repo/config.json"},
+		{name: "user JSON", files: []string{"user/kor/config.json"}, want: "user/kor/config.json"},
+		{name: "user YAML", files: []string{"user/kor/config.yaml"}, want: "user/kor/config.yaml"},
+		{name: "repo before user", files: []string{"repo/config.json", "user/kor/config.yaml"}, want: "repo/config.json"},
+		{name: "repo YAML before JSON", files: []string{"repo/config.json", "repo/kor.yaml"}, want: "repo/kor.yaml"},
+		{name: "user YAML before JSON", files: []string{"user/kor/config.json", "user/kor/config.yaml"}, want: "user/kor/config.yaml"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, useXDG := range []bool{true, false} {
+				dir := t.TempDir()
+				t.Setenv("HOME", dir)
+				userDir := filepath.Join(dir, ".config")
+				if useXDG {
+					userDir = filepath.Join(dir, "xdg")
+					t.Setenv("XDG_CONFIG_HOME", userDir)
+				} else {
+					t.Setenv("XDG_CONFIG_HOME", "")
+				}
+				resolve := func(path string) string {
+					if filepath.Dir(path) == "user/kor" {
+						return filepath.Join(userDir, "kor", filepath.Base(path))
+					}
+					return filepath.Join(dir, path)
+				}
+				for _, file := range tt.files {
+					path := resolve(file)
+					if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				want := ""
+				if tt.want != "" {
+					want = resolve(tt.want)
+				}
+				if got := Discover(filepath.Join(dir, "repo")); got != want {
+					t.Fatalf("XDG=%t: Discover() = %q, want %q", useXDG, got, want)
+				}
+			}
+		})
 	}
 }

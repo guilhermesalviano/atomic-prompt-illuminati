@@ -89,7 +89,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to <current-branch>)")
+	cmd.Flags().StringVar(&name, "name", "", "branch for this run (blank/current name uses the current checkout; a new name creates a worktree)")
 	cmd.Flags().StringArrayVar(&planPaths, "plan", nil, "plan file(s) (.md or .json); skips the planner stage (mentions like @docs/plan.md in the prompt work too)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")

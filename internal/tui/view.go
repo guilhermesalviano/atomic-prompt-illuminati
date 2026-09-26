@@ -21,41 +21,63 @@ const (
 
 // View implements tea.Model.
 func (a *App) View() string {
-	w, h := max(a.width, 60), max(a.height, 16)
+	w, h := max(a.width, 1), max(a.height, 1)
 
 	if a.setup.active {
-		return a.renderSetup(w, h)
+		return fitView(a.renderSetup(w, h), w, h)
 	}
 
-	sideW, mainW, asideW := layout(w)
+	sideW, mainW, asideW := a.layout(w)
 	a.asideFits = asideW > 0 // read by the footer's key hints
 
 	header := a.renderHeader(w)
 	footer := a.renderFooter(w)
-	bodyH := max(h-lipgloss.Height(header)-lipgloss.Height(footer), 8)
+	bodyH := max(h-lipgloss.Height(header)-lipgloss.Height(footer), 3)
+	if a.showSidebar && w < 80 {
+		body := a.renderSidebar(w, bodyH)
+		return fitView(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), w, h)
+	}
 
 	if !a.showAside {
 		mainW, asideW = mainW+asideW, 0
 	}
-	cols := []string{a.renderSidebar(sideW, bodyH), a.renderMain(mainW, bodyH)}
+	var cols []string
+	if sideW > 0 {
+		cols = append(cols, a.renderSidebar(sideW, bodyH))
+	}
+	cols = append(cols, a.renderMain(mainW, bodyH))
 	if asideW > 0 {
 		cols = append(cols, a.renderAside(asideW, bodyH))
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	return fitView(lipgloss.JoinVertical(lipgloss.Left, header, body, footer), w, h)
 }
 
 // layout splits the width into sidebar, main pane and diff aside. The aside
 // only appears when the main pane keeps enough room for the pipeline cards.
-func layout(w int) (side, main, aside int) {
+func (a *App) layout(w int) (side, main, aside int) {
 	const minMain = 64
-	side = min(max(w/5, 26), 38)
+	if a.showSidebar && w >= 80 {
+		side = min(max(w/5, 24), 38)
+	}
 	aside = min(max(w*36/100, 46), 110)
 	if w-side-aside >= minMain {
 		return side, w - side - aside, aside
 	}
-	side = min(max(w*3/10, 28), 44)
 	return side, w - side, 0
+}
+
+// fitView bounds the frame to the actual terminal, including very small sizes.
+func fitView(s string, w, h int) string {
+	lines := strings.Split(s, "\n")
+	lines = lines[:min(len(lines), h)]
+	for len(lines) < h {
+		lines = append(lines, "")
+	}
+	for i, line := range lines {
+		lines[i] = truncate(line, w)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderAside shows the selected run's whole diff: the live worktree while it
@@ -111,6 +133,9 @@ func (a *App) renderAside(w, h int) string {
 func (a *App) renderHeader(w int) string {
 	left := gradient(" ◬ PROMPTER ILLUMINATI", gradFrom, gradTo, true) +
 		mutedStyle.Render("  ·  "+filepath.Base(a.cfg.Repo))
+	if w < 80 {
+		left = goldStyle.Bold(true).Render(" kor") + mutedStyle.Render(" · "+filepath.Base(a.cfg.Repo))
+	}
 
 	var live, waiting, done, failed int
 	for _, e := range a.entries {
@@ -149,7 +174,7 @@ func (a *App) renderHeader(w int) string {
 // --- sidebar ----------------------------------------------------------------
 
 func (a *App) renderSidebar(w, h int) string {
-	inner := w - 4
+	inner := max(1, w - 4)
 	rows := h - 2
 	title := "WORKTREES"
 	if n := len(a.entries); n > 0 {
@@ -266,7 +291,7 @@ func (a *App) entryStateText(e *Entry) string {
 // --- main pane --------------------------------------------------------------
 
 func (a *App) renderMain(w, h int) string {
-	inner := w - 4
+	inner := max(1, w - 4)
 	rows := h - 2
 	e := a.current()
 	if e == nil {
@@ -303,7 +328,26 @@ func (a *App) renderMain(w, h int) string {
 		top = append(top, "")
 	}
 
-	viewH := max(rows-len(top)-2, 3)
+	if w < 80 || len(top) > rows-4 {
+		// Reserve space for the selected tab; large cards must not push the
+		// review, diff, or gate controls below a phone-sized viewport.
+		gate := []string(nil)
+		if e.Gate != nil {
+			gate = a.renderGate(e, inner)
+		}
+		top = []string{boldStyle.Render(truncate(strings.Join(strings.Fields(e.Prompt), " "), inner)), a.metaLine(e, inner)}
+		if rows-len(top)-len(gate)-4 >= len(stageOrder) {
+			for _, k := range stageOrder {
+				glyph, word, col := a.stageStatus(e.Stages[k], e.Live)
+				top = append(top, truncate(lipgloss.NewStyle().Foreground(roleColor[k]).Render(strings.ToUpper(string(k)))+" "+lipgloss.NewStyle().Foreground(col).Render(glyph+" "+word), inner))
+			}
+		}
+		if e.ErrText != "" && rows-len(top)-len(gate) > 4 {
+			top = append(top, redStyle.Render(truncate(e.ErrText, inner)))
+		}
+		top = append(top, gate...)
+	}
+	viewH := max(rows-len(top)-2, 1)
 	content := a.contentLines(e, inner)
 	maxOff := max(0, len(content)-viewH)
 	off := min(a.scroll, maxOff)
@@ -547,13 +591,17 @@ func (a *App) renderGate(e *Entry, w int) []string {
 		lines = append(lines, bar+truncate(strings.Join(chips, "   "), w-2))
 		return lines
 	}
-	return []string{
-		bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2)),
-		bar + truncate(strings.Join(chips, "   "), w-2),
+	lines := []string{bar + amberStyle.Bold(true).Render(truncate("◆ "+title, w-2))}
+	for _, line := range packHints(chips, max(1, w-2)) {
+		lines = append(lines, bar+line)
 	}
+	return lines
 }
 
 func (a *App) tabBar(e *Entry, w, off, maxOff int) string {
+	if w < 60 {
+		return truncate(goldStyle.Bold(true).Render(fmt.Sprintf("%d %s", a.tab+1, tabNames[a.tab]))+mutedStyle.Render("  · tab/1–4 views"), w)
+	}
 	var parts []string
 	for i, name := range tabNames {
 		label := fmt.Sprintf("%d %s", i+1, name)
@@ -626,6 +674,16 @@ func (a *App) contentLines(e *Entry, w int) []string {
 }
 
 func (a *App) welcome(w, h int) []string {
+	if w < 60 || h < 18 {
+		return []string{
+			gradient("korchestrate", gradFrom, gradTo, true),
+			"",
+			textStyle.Render("type a prompt below"),
+			mutedStyle.Render("blank name: current checkout"),
+			keyHint("n", "new prompt"),
+			keyHint("m", "models") + "  " + keyHint("b", "runs"),
+		}
+	}
 	art := []string{
 		"      ▲      ",
 		"     ╱ ╲     ",
@@ -640,7 +698,7 @@ func (a *App) welcome(w, h int) []string {
 	}
 	out = append(out, "",
 		gradient("korchestrate", gradFrom, gradTo, true),
-		mutedStyle.Render("one prompt · three minds · isolated worktree"),
+		mutedStyle.Render("one prompt · three minds · your chosen branch"),
 		"",
 		lipgloss.NewStyle().Foreground(cViolet).Render("plan")+faintStyle.Render(" ━▶ ")+
 			lipgloss.NewStyle().Foreground(cCyan).Render("execute")+faintStyle.Render(" ━▶ ")+
@@ -664,9 +722,13 @@ func (a *App) welcome(w, h int) []string {
 
 func (a *App) renderFooter(w int) string {
 	if e := a.confirmDel; e != nil {
-		lines := []string{redStyle.Bold(true).Render("⚠ Delete "+e.branch()+"?") +
-			textStyle.Render(" Removes its worktree, branch and run history.")}
-		if e.Run != nil && e.Run.Commit != "" && !e.Run.Pushed {
+		message := "Removes its worktree, branch and run history."
+		if e.Run != nil && e.Run.InPlace {
+			message = "Removes run history; keeps your checkout and branch."
+		}
+		lines := []string{redStyle.Bold(true).Render("⚠ Delete "+e.branch()+"?")}
+		lines = append(lines, wrap(message, max(1, w-4))...)
+		if e.Run != nil && !e.Run.InPlace && e.Run.Commit != "" && !e.Run.Pushed {
 			lines = append(lines, amberStyle.Render("Commit "+shortSHA(e.Run.Commit)+" was never pushed and will be lost."))
 		}
 		lines = append(lines, chip("y", "delete", cRed)+"  "+chip("esc", "keep", cMuted))
@@ -680,21 +742,21 @@ func (a *App) renderFooter(w int) string {
 	if a.confirmQuit {
 		n := a.liveCount()
 		msg := amberStyle.Bold(true).Render(fmt.Sprintf("⚠ %d run(s) in flight.", n)) +
-			textStyle.Render(" Quitting cancels them and removes their worktrees. ") +
+			textStyle.Render(" Quitting cancels active runs. ") +
 			chip("q", "quit", cRed) + "  " + chip("esc", "stay", cMuted)
 		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cAmber).
 			Padding(0, 1).Width(w - 2)
-		return box.Render(truncate(msg, w-4)) + "\n"
+		return box.Render(strings.Join(wrap(msg, max(1, w-4)), "\n")) + "\n"
 	}
 
 	border := cFaint
 	if a.inputFocus {
 		border = cGold
 	}
-	avail := w - 8
+	avail := max(1, w - 4)
 	nameActive := a.inputFocus && a.field == fieldName
 	promptActive := a.inputFocus && a.field == fieldPrompt
-	body := inputLine("name", string(a.inputName), nameActive, "blank uses the current branch", avail) + "\n" +
+	body := inputLine("name", string(a.inputName), nameActive, "blank: current checkout", avail) + "\n" +
 		inputLine("prompt", string(a.input), promptActive, "describe the change you want…", avail)
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Padding(0, 1).Width(w - 2).Render(body)
@@ -702,8 +764,10 @@ func (a *App) renderFooter(w int) string {
 	var hints []string
 	e := a.current()
 	switch {
+	case a.showSidebar && w < 80 && !a.inputFocus:
+		hints = []string{keyHint("↑↓", "select"), keyHint("enter", "open"), keyHint("b/esc", "close"), keyHint("q", "quit")}
 	case a.inputFocus:
-		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear"), keyHint("esc", "back")}
+		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("esc", "back"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear")}
 	case e != nil && e.Gate != nil:
 		switch {
 		case e.Gate.kind == gateAgent:
@@ -719,19 +783,47 @@ func (a *App) renderFooter(w int) string {
 		default:
 			hints = []string{keyHint("f", "fix"), keyHint("r", "reject")}
 		}
-		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
+		hints = append(hints, keyHint("b", "runs"), keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
 	default:
-		hints = []string{keyHint("n", "new prompt"), keyHint("m", "models"), keyHint("↑↓", "select"), keyHint("tab", "views"),
+		hints = []string{keyHint("n", "new"), keyHint("b", "runs"), keyHint("m", "models"), keyHint("tab", "views"), keyHint("↑↓", "select"),
 			keyHint("pgup/pgdn", "scroll"), a.diffHint()}
 		if e != nil && !e.Live {
 			hints = append(hints, keyHint("x", "delete"))
 		}
 		hints = append(hints, keyHint("q", "quit"))
 	}
+	if w < 80 {
+		lines := packHints(hints, w-2)
+		lines = lines[:min(len(lines), 3)]
+		if a.notice != "" {
+			lines = wrap(amberStyle.Render("⚠ "+a.notice), max(1, w-2))
+		}
+		if !a.inputFocus && e != nil {
+			return strings.Join(lines, "\n")
+		}
+		return box + "\n" + strings.Join(lines, "\n")
+	}
 	if a.notice != "" {
 		return box + "\n" + truncate(" "+amberStyle.Render("⚠ "+a.notice), w)
 	}
 	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
+}
+
+// packHints wraps whole controls so their key and label stay together.
+func packHints(hints []string, w int) []string {
+	var lines []string
+	line := ""
+	for _, hint := range hints {
+		if line != "" && lipgloss.Width(line)+2+lipgloss.Width(hint) > w {
+			lines = append(lines, line)
+			line = ""
+		}
+		if line != "" {
+			line += "  "
+		}
+		line += truncate(hint, w)
+	}
+	return append(lines, line)
 }
 
 func (a *App) diffHint() string {
@@ -764,9 +856,9 @@ func inputLine(label, val string, active bool, placeholder string, avail int) st
 	switch {
 	case val == "" && active:
 		content = lipgloss.NewStyle().Reverse(true).Render(" ") +
-			mutedStyle.Render(" "+tail(placeholder, max(0, inner-2)))
+			mutedStyle.Render(" "+truncate(placeholder, max(0, inner-2)))
 	case val == "":
-		content = mutedStyle.Render(tail(placeholder, inner))
+		content = mutedStyle.Render(truncate(placeholder, inner))
 	default:
 		text := tail(val, inner)
 		if active {

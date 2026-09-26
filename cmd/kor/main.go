@@ -37,7 +37,7 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	root.PersistentFlags().StringVar(&configPath, "config", "", "path to kor.yaml (defaults to ./kor.yaml or ~/.config/kor/config.yaml)")
+	root.PersistentFlags().StringVar(&configPath, "config", "", "path to JSON or YAML config (searches repo, then ~/.config/kor; YAML takes precedence)")
 	root.PersistentFlags().StringVar(&repo, "repo", ".", "target git repository")
 	root.PersistentFlags().StringVar(&artifactsDir, "artifacts-dir", "", "override the run artifacts directory")
 

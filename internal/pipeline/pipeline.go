@@ -1,5 +1,5 @@
 // Package pipeline drives the plan → execute → review state machine across the
-// three agent CLIs, enforcing worktree isolation and the human gates.
+// three agent CLIs, managing the run checkout and the human gates.
 package pipeline
 
 import (
@@ -26,12 +26,10 @@ type Options struct {
 	// stage. When set, planning is skipped and the plan goes straight to the
 	// plan gate.
 	Plan *contracts.Plan
-	// Name is the optional worktree/branch name for a new run. When set, the
-	// branch is created with this name verbatim. When empty, the branch
-	// defaults to <current-branch>, suffixed -2, -3, ... while taken; when a
-	// suffixed name is already taken the user is asked whether to reuse that
-	// existing worktree or create a new one. It is ignored when resuming a
-	// run, whose branch is already recorded.
+	// Name selects the branch for a new run. Empty or the current branch name
+	// uses the current checkout directly. Other names create an isolated
+	// worktree; existing names offer reuse or a suffixed new branch.
+	// Resumed runs keep their recorded checkout.
 	Name         string
 	AllowDirty   bool
 	KeepWorktree bool
@@ -120,17 +118,31 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}
 	p.branch = run.Branch
 	p.worktreePath = run.Worktree
+	if run.InPlace {
+		current, err := worktree.CurrentBranch(run.Worktree)
+		if err != nil {
+			return err
+		}
+		if current != run.Branch {
+			return fmt.Errorf("run uses branch %q, but its checkout is on %q; switch back before resuming", run.Branch, current)
+		}
+	}
 	if p.branch == "" {
-		if name := strings.TrimSpace(p.Opts.Name); name != "" {
-			p.branch = name
+		current, err := worktree.CurrentBranch(p.Opts.Repo)
+		if err != nil {
+			return err
+		}
+		name := strings.TrimSpace(p.Opts.Name)
+		if name == "" || name == current {
+			if current == "" || current == "HEAD" {
+				return fmt.Errorf("checkout has a detached HEAD; choose a branch with --name")
+			}
+			p.branch, p.worktreePath, run.InPlace = current, p.Opts.Repo, true
 		} else {
 			var derr error
-			p.branch, p.reused, derr = p.deriveBranch(ctx, run.ID)
+			p.branch, p.reused, derr = p.deriveBranch(ctx, name)
 			if derr != nil {
 				return derr
-			}
-			if !p.reused {
-				p.Gate.Info("no worktree name given; using branch " + p.branch)
 			}
 		}
 	}
@@ -163,7 +175,12 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	}()
 
 	if created {
-		if p.reused {
+		if run.InPlace {
+			if err := run.SetState(artifact.StateWorktree); err != nil {
+				return err
+			}
+			p.Gate.Info("using current checkout " + p.worktreePath + " on " + p.branch)
+		} else if p.reused {
 			// The user chose to keep the existing worktree/branch: adopt it
 			// where it lives instead of creating a fresh one.
 			if err := p.adoptWorktree(); err != nil {
@@ -366,24 +383,8 @@ func (p *Pipeline) fixInstruction(review *contracts.Review) string {
 	return review.Summary
 }
 
-// deriveBranch picks a branch for a run started without a worktree name:
-// <current-branch> (e.g. main), with a -2, -3, ... suffix while that name is
-// taken. When a suffixed name is already taken — usually by a previous run's
-// worktree — the user is asked whether to reuse it or keep looking for a free
-// name; reuse reports which happened. A detached HEAD falls back to the run ID,
-// which is unique by construction.
-func (p *Pipeline) deriveBranch(ctx context.Context, runID string) (branch string, reuse bool, err error) {
-	cur, err := worktree.CurrentBranch(p.Opts.Repo)
-	if err != nil {
-		return "", false, err
-	}
-	if cur == "" || cur == "HEAD" {
-		return runID, false, nil
-	}
-	base := cur
-	if err := worktree.ValidBranch(p.Opts.Repo, base); err != nil {
-		base = artifact.Slug(cur, 40)
-	}
+// deriveBranch offers reuse for an existing named branch or finds a free suffix.
+func (p *Pipeline) deriveBranch(ctx context.Context, base string) (branch string, reuse bool, err error) {
 	for i := 1; ; i++ {
 		candidate := base
 		if i > 1 {
@@ -391,11 +392,6 @@ func (p *Pipeline) deriveBranch(ctx context.Context, runID string) (branch strin
 		}
 		if !worktree.BranchExists(p.Opts.Repo, candidate) {
 			return candidate, false, nil
-		}
-		// The unsuffixed base is normally the branch checked out in the repo
-		// itself; only suffixed names can belong to a previous run.
-		if i == 1 {
-			continue
 		}
 		d, gerr := p.Gate.WorktreeGate(ctx, candidate)
 		if gerr != nil {
@@ -424,6 +420,10 @@ func (p *Pipeline) adoptWorktree() error {
 // worktree the run reused existed before the run started, so it is always
 // kept, whatever KeepWorktree says.
 func (p *Pipeline) cleanup() {
+	if p.Run != nil && p.Run.InPlace {
+		p.Gate.Info("keeping current checkout " + p.worktreePath + " (branch " + p.branch + ")")
+		return
+	}
 	if p.worktreePath == "" || p.branch == "" {
 		return
 	}

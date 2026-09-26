@@ -22,7 +22,7 @@ Requires Go 1.22+ and the agent CLIs you want to use (`claude`, `codex`, `openco
 ## Quick start
 
 ```sh
-cp examples/kor.yaml kor.yaml   # edit models/agents per stage
+# Edit config.json to set the default agents and models per stage.
 kor run "add pagination to the users list"
 ```
 
@@ -43,9 +43,26 @@ check the diff. Approve in the TUI to apply the result to your branch.
 
 ## Configuration
 
-kor reads `./kor.yaml` or `~/.config/kor/config.yaml`. See [examples/kor.yaml](examples/kor.yaml)
-for all options — per-stage agents and models, iteration limits, review gates, timeouts
-and budgets.
+Edit [config.json](config.json) to define the default provider CLI (`agent`) and
+`model` for each stage: `planner`, `executor`, and `reviewer`. Supported agents are
+`claude`, `codex`, and `opencode`. Each stage can also set a `fallback` agent;
+`variant` controls reasoning effort and `subagent` selects an OpenCode agent.
+These values are preselected in the dashboard's model picker.
+
+Without `--config`, kor uses the first file found in this order:
+
+1. `<repo>/kor.yaml`
+2. `<repo>/config.json`
+3. `~/.config/kor/config.yaml`
+4. `~/.config/kor/config.json`
+
+`XDG_CONFIG_HOME` replaces `~/.config` when set. To share defaults across repos,
+copy `config.json` to the user config directory. To select a file explicitly,
+use `kor --config /path/to/config.json run "your prompt"`.
+
+JSON and YAML use the same fields, and omitted fields keep their built-in defaults.
+See [examples/kor.yaml](examples/kor.yaml) for all options, including iteration
+limits, review gates, timeouts and budgets.
 
 ## Uninstall
 

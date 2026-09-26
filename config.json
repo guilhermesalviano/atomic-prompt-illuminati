@@ -1,0 +1,21 @@
+{
+  "models": {
+    "planner": {
+      "agent": "claude",
+      "model": "opus",
+      "fallback": "codex"
+    },
+    "executor": {
+      "agent": "codex",
+      "model": "gpt-6-sol",
+      "fallback": "opencode"
+    },
+    "reviewer": {
+      "agent": "opencode",
+      "model": "opencode-go/deepseek-v4.1-flash",
+      "variant": "high",
+      "subagent": "plan",
+      "fallback": "claude"
+    }
+  }
+}

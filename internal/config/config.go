@@ -144,7 +144,7 @@ func DefaultArtifactsDir() string {
 	return filepath.Join(base, "korchestrate", "runs")
 }
 
-// Load reads a YAML config file, merging it over defaults. A missing path is
+// Load reads a JSON or YAML config file, merging it over defaults. A missing path is
 // not an error (defaults are returned).
 func Load(path string) (*Config, error) {
 	c := Default()
@@ -158,6 +158,7 @@ func Load(path string) (*Config, error) {
 		}
 		return nil, err
 	}
+	// JSON is also accepted by the YAML decoder, including string durations.
 	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
@@ -165,16 +166,18 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
-// Discover looks for kor.yaml in repo then in the user config dir.
+// Discover looks for kor.yaml or config.json in repo, then config.yaml or
+// config.json in the user config dir. Existing YAML files take precedence
+// over JSON files in the same directory.
 func Discover(repo string) (path string) {
 	candidates := []string{}
 	if repo != "" {
-		candidates = append(candidates, filepath.Join(repo, "kor.yaml"))
+		candidates = append(candidates, filepath.Join(repo, "kor.yaml"), filepath.Join(repo, "config.json"))
 	}
 	if base := os.Getenv("XDG_CONFIG_HOME"); base != "" {
-		candidates = append(candidates, filepath.Join(base, "kor", "config.yaml"))
+		candidates = append(candidates, filepath.Join(base, "kor", "config.yaml"), filepath.Join(base, "kor", "config.json"))
 	} else if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".config", "kor", "config.yaml"))
+		candidates = append(candidates, filepath.Join(home, ".config", "kor", "config.yaml"), filepath.Join(home, ".config", "kor", "config.json"))
 	}
 	for _, cand := range candidates {
 		if _, err := os.Stat(cand); err == nil {

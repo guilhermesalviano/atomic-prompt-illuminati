@@ -40,8 +40,7 @@ const (
 var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff"}
 
 // inputField selects which footer field receives typing while the input is
-// focused. The name comes first; leaving it blank derives the worktree from
-// the current branch.
+// focused. Leaving the name blank uses the current checkout directly.
 type inputField int
 
 const (
@@ -68,6 +67,7 @@ type App struct {
 	entries []*Entry
 	cursor  int
 	listTop int
+	showSidebar bool
 
 	// choices is the sticky pre-run provider/model/effort selection, edited
 	// through the setup overlay; catalog backs it with discovered models.
@@ -648,6 +648,9 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case tea.WindowSizeMsg:
+		if t.Width < 80 && a.width >= 80 {
+			a.showSidebar = false
+		}
 		a.width, a.height = t.Width, t.Height
 		return a, nil
 
@@ -794,7 +797,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if prompt == "" {
 				return a, nil
 			}
-			// A blank name derives the worktree from the current branch.
+			// A blank name uses the current checkout.
 			cmd := a.startRun(name, prompt)
 			if cmd != nil {
 				a.input, a.inputName = nil, nil
@@ -815,6 +818,24 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// The run list remains accessible while a gate is waiting.
+	if msg.String() == "b" {
+		a.showSidebar = !a.showSidebar
+		return a, nil
+	}
+	if a.showSidebar && a.width < 80 {
+		switch msg.String() {
+		case "up", "k":
+			a.move(-1)
+		case "down", "j":
+			a.move(1)
+		case "enter", "esc":
+			a.showSidebar = false
+		case "q", "ctrl+c":
+			return a.quit()
+		}
+		return a, nil
+	}
 	if e := a.current(); e != nil && e.Gate != nil {
 		switch e.Gate.kind {
 		case gateAgent:

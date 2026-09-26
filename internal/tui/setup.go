@@ -303,8 +303,8 @@ func (a *App) catalogSummary() string {
 
 // renderSetup draws the modal centered on the terminal.
 func (a *App) renderSetup(w, h int) string {
-	boxW := min(64, max(44, w-6))
-	inner := boxW - 4
+	boxW := min(64, w)
+	inner := max(1, boxW - 4)
 	var lines []string
 	switch a.setup.mode {
 	case setupStages:
@@ -315,6 +315,9 @@ func (a *App) renderSetup(w, h int) string {
 		lines = a.renderSetupModel(inner, h)
 	case setupEffort:
 		lines = a.renderSetupEffort(inner)
+	}
+	for i, line := range lines {
+		lines[i] = truncate(line, inner)
 	}
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 		BorderForeground(cGold).Padding(0, 1).Width(boxW - 2).

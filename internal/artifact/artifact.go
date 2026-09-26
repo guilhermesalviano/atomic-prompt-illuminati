@@ -52,6 +52,8 @@ type Run struct {
 	Repo      string    `json:"repo"`
 	Branch    string    `json:"branch"`
 	Worktree  string    `json:"worktree"`
+	// InPlace runs use the user's checkout; cleanup must never remove it.
+	InPlace   bool      `json:"in_place,omitempty"`
 	Dir       string    `json:"dir"`
 	State     State     `json:"state"`
 	Iteration int       `json:"iteration"`
