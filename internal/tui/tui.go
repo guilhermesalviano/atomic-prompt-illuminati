@@ -90,6 +90,7 @@ type App struct {
 	confirmQuit bool
 	confirmDel  *Entry // run awaiting a delete confirmation
 	notice      string // one-shot footer message, cleared by the next key
+	help        bool   // key-hint cheatsheet overlay, toggled with "h"
 
 	// discard tears down a finished run's worktree, branch and artifacts.
 	discard func(*artifact.Run) (warn, err error)
@@ -757,6 +758,10 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a.notice = ""
+	if a.help {
+		a.help = false
+		return a, nil
+	}
 	if a.confirmQuit {
 		switch msg.String() {
 		case "q", "y", "ctrl+c":
@@ -825,6 +830,10 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if msg.String() == "h" {
+		a.help = true
+		return a, nil
+	}
 	// The run list remains accessible while a gate is waiting.
 	if msg.String() == "b" {
 		a.showSidebar = !a.showSidebar
@@ -870,7 +879,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setTab((a.tab + 1) % tabCount)
 				return a, nil
 			}
-		case "shift+tab", "left", "h":
+		case "shift+tab", "left":
 			if e.Gate.kind != gateAgent {
 				a.setTab((a.tab + tabCount - 1) % tabCount)
 				return a, nil
@@ -915,7 +924,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.move(1)
 	case "tab", "right", "l":
 		a.setTab((a.tab + 1) % tabCount)
-	case "shift+tab", "left", "h":
+	case "shift+tab", "left":
 		a.setTab((a.tab + tabCount - 1) % tabCount)
 	case "1", "2", "3", "4":
 		a.setTab(tab(msg.String()[0] - '1'))

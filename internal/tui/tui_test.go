@@ -322,6 +322,36 @@ func TestDiffAsideOnWideTerminals(t *testing.T) {
 	}
 }
 
+func TestHelpOverlayShowsAllHintsAndFits(t *testing.T) {
+	a := NewApp(testConfig(), t.TempDir())
+	a.entries = []*Entry{newEntry("x", "/repo")}
+	a.handleKey(key("h"))
+	if !a.help {
+		t.Fatal("h should open the key cheatsheet")
+	}
+	for _, size := range [][2]int{{60, 24}, {80, 24}, {120, 40}} {
+		a.width, a.height = size[0], size[1]
+		view := a.View()
+		if lipgloss.Height(view) != size[1] {
+			t.Fatalf("%v: height %d", size, lipgloss.Height(view))
+		}
+		for _, line := range strings.Split(view, "\n") {
+			if lipgloss.Width(line) > size[0] {
+				t.Fatalf("%v: overflow %q", size, line)
+			}
+		}
+		for _, want := range []string{"KEYS", "RUNS", "VIEWS", "quit"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("%v: missing %q:\n%s", size, want, view)
+			}
+		}
+	}
+	a.handleKey(key("esc"))
+	if a.help {
+		t.Fatal("any key should close the cheatsheet")
+	}
+}
+
 func TestLiveDiffIgnoredAfterFinish(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
 	e := newEntry("x", "/repo")

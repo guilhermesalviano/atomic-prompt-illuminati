@@ -30,8 +30,12 @@ func (a *App) View() string {
 		return fitView(a.renderSetup(w, h), w, h)
 	}
 
+	if a.help {
+		return fitView(a.renderHelp(w, h), w, h)
+	}
+
 	sideW, mainW, asideW := a.layout(w)
-	a.asideFits = asideW > 0 // read by the footer's key hints
+	a.asideFits = asideW > 0 // read by the "d" key handler
 
 	header := a.renderHeader(w)
 	footer := a.renderFooter(w)
@@ -772,42 +776,8 @@ func (a *App) renderFooter(w int) string {
 	box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(border).
 		Padding(0, 1).Width(w - 2).Render(body)
 
-	var hints []string
+	hints := []string{keyHint("h", "keys")}
 	e := a.current()
-	switch {
-	case a.showSidebar && w < 80 && !a.inputFocus:
-		hints = []string{keyHint("↑↓", "select"), keyHint("enter", "open"), keyHint("b/esc", "close"), keyHint("p", "commit+push"), keyHint("q", "quit")}
-	case a.inputFocus:
-		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("esc", "back"), keyHint("ctrl+p", "push"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear")}
-	case e != nil && e.Gate != nil:
-		switch {
-		case e.Gate.kind == gateAgent:
-			hints = []string{keyHint("t", "retry"), keyHint("↑↓", "choose"), keyHint("enter", "use"), keyHint("esc", "stop")}
-		case e.Gate.kind == gateRetry:
-			hints = []string{keyHint("t", "retry"), keyHint("s", "stop")}
-		case e.Gate.kind == gatePlan:
-			hints = []string{keyHint("a", "approve"), keyHint("r", "reject")}
-		case e.Gate.kind == gateCommit:
-			hints = []string{keyHint("c", "commit"), keyHint("p", "commit + push"), keyHint("s", "skip")}
-		case e.Gate.kind == gateWorktree:
-			hints = []string{keyHint("k", "keep existing"), keyHint("c", "create new")}
-		case e.Gate.review != nil && e.Gate.review.Pass():
-			hints = []string{keyHint("a", "approve"), keyHint("f", "fix"), keyHint("r", "reject")}
-		default:
-			hints = []string{keyHint("f", "fix"), keyHint("r", "reject")}
-		}
-		if e.Gate.kind != gateCommit {
-			hints = append(hints, keyHint("p", "commit+push"))
-		}
-		hints = append(hints, keyHint("b", "runs"), keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
-	default:
-		hints = []string{keyHint("n", "new"), keyHint("b", "runs"), keyHint("p", "commit+push"), keyHint("m", "models"), keyHint("tab", "views"), keyHint("↑↓", "select"),
-			keyHint("pgup/pgdn", "scroll"), a.diffHint()}
-		if e != nil && !e.Live {
-			hints = append(hints, keyHint("x", "delete"))
-		}
-		hints = append(hints, keyHint("q", "quit"))
-	}
 	if w < 80 {
 		lines := packHints(hints, w-2)
 		lines = lines[:min(len(lines), 3)]
@@ -840,17 +810,6 @@ func packHints(hints []string, w int) []string {
 		line += truncate(hint, w)
 	}
 	return append(lines, line)
-}
-
-func (a *App) diffHint() string {
-	switch {
-	case !a.asideFits:
-		return keyHint("d", "diff")
-	case a.showAside:
-		return keyHint("[ ]", "scroll diff") + "  " + keyHint("d", "hide diff")
-	default:
-		return keyHint("d", "show diff")
-	}
 }
 
 // --- layout helpers ---------------------------------------------------------
