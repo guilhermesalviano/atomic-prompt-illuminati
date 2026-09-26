@@ -349,7 +349,7 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 		return err
 	}
 	commit, err := retryStep(ctx, p, "commit", func() (string, error) {
-		return worktree.Commit(p.worktreePath, fmt.Sprintf("%s\n\napi run %s", plan.Summary, run.ID))
+		return worktree.Commit(p.worktreePath, fmt.Sprintf("%s\n\nkor run %s", plan.Summary, run.ID))
 	})
 	if err != nil {
 		return err

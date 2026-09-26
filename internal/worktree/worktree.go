@@ -254,12 +254,13 @@ func Commit(worktree, message string) (string, error) {
 	if strings.TrimSpace(status) == "" {
 		return "", nil
 	}
+	if err := checkIdentity(worktree); err != nil {
+		return "", err
+	}
 	if _, err := git(worktree, "add", "-A"); err != nil {
 		return "", err
 	}
-	_, err = git(worktree, "-c", "user.name=api", "-c", "user.email=api@localhost",
-		"commit", "-m", message)
-	if err != nil {
+	if _, err := git(worktree, "commit", "-m", message); err != nil {
 		return "", err
 	}
 	out, err := git(worktree, "rev-parse", "HEAD")
@@ -267,4 +268,18 @@ func Commit(worktree, message string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// checkIdentity ensures commits are authored by the user's own git identity
+// (repo or global config, or GIT_AUTHOR_EMAIL), so GitHub links them to the
+// user's account.
+func checkIdentity(worktree string) error {
+	if os.Getenv("GIT_AUTHOR_EMAIL") != "" {
+		return nil
+	}
+	out, _ := git(worktree, "config", "user.email")
+	if strings.TrimSpace(out) != "" {
+		return nil
+	}
+	return errors.New(`git identity not configured; run: git config --global user.name "Your Name" && git config --global user.email "you@example.com" (use an email linked to your GitHub account)`)
 }

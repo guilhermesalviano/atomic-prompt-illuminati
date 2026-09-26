@@ -70,11 +70,13 @@ func setupRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	gitRun(t, dir, "init", "-b", "main")
+	gitRun(t, dir, "config", "user.name", "t")
+	gitRun(t, dir, "config", "user.email", "t@t")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, dir, "add", "-A")
-	gitRun(t, dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "init")
+	gitRun(t, dir, "commit", "-m", "init")
 	return dir
 }
 
