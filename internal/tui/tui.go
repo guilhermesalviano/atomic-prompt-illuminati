@@ -56,8 +56,13 @@ const maxLogs = 1000
 type App struct {
 	// OnStart is called when the user submits a prompt. Implementations should
 	// run the pipeline with the chosen provider/model/effort setup and call
-	// Session.Finish when done.
-	OnStart func(s *Session, name, prompt string, choices models.Choices)
+	// Session.Finish when done. plan is the pre-parsed plan when the prompt
+	// pointed at plan files, nil when the planner stage should run.
+	OnStart func(s *Session, name, prompt string, choices models.Choices, plan *contracts.Plan)
+
+	// PlanFromPrompt resolves @file.md plan mentions in a submitted prompt.
+	// A failed resolution blocks the run and explains itself via notice.
+	PlanFromPrompt func(prompt string) (*contracts.Plan, string, error)
 
 	cfg     *config.Config
 	entries []*Entry
@@ -786,12 +791,16 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			name := strings.TrimSpace(string(a.inputName))
 			prompt := strings.TrimSpace(string(a.input))
-			a.input, a.inputName = nil, nil
-			a.inputFocus = false
-			// A blank name derives the worktree from the current branch.
-			if prompt != "" {
-				return a, a.startRun(name, prompt)
+			if prompt == "" {
+				return a, nil
 			}
+			// A blank name derives the worktree from the current branch.
+			cmd := a.startRun(name, prompt)
+			if cmd != nil {
+				a.input, a.inputName = nil, nil
+				a.inputFocus = false
+			}
+			return a, cmd
 		case tea.KeyBackspace:
 			a.deleteChar()
 		case tea.KeyCtrlU:
@@ -982,11 +991,23 @@ func (a *App) liveCount() int {
 
 // startRun appends a live entry and asks the host to run the pipeline. The
 // entry snapshots the current model choices so the run keeps displaying what
-// it was started with.
+// it was started with. A prompt pointing at plan files (@plan.md) skips the
+// planner; when the files cannot be resolved nothing starts and the typed
+// input is kept for editing.
 func (a *App) startRun(name, prompt string) tea.Cmd {
+	plan := (*contracts.Plan)(nil)
+	if a.PlanFromPrompt != nil {
+		p, clean, err := a.PlanFromPrompt(prompt)
+		if err != nil {
+			a.notice = err.Error()
+			return nil
+		}
+		plan, prompt = p, clean
+	}
 	e := newEntry(prompt, a.cfg.Repo)
 	e.Name = strings.TrimSpace(name)
 	e.Models = a.choices
+	e.Plan = plan
 	s := &Session{entry: e, app: a}
 	e.Session = s
 	a.entries = append([]*Entry{e}, a.entries...)
@@ -994,7 +1015,7 @@ func (a *App) startRun(name, prompt string) tea.Cmd {
 	a.setTab(tabActivity)
 	return func() tea.Msg {
 		if a.OnStart != nil {
-			a.OnStart(s, e.Name, prompt, a.choices)
+			a.OnStart(s, e.Name, prompt, a.choices, plan)
 		}
 		return nil
 	}

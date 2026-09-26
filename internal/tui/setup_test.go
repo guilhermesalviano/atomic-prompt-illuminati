@@ -166,7 +166,7 @@ func TestStartRunSnapshotsChoices(t *testing.T) {
 	a.catalog = testCatalog()
 
 	var got models.Choices
-	a.OnStart = func(_ *Session, _, _ string, choices models.Choices) {
+	a.OnStart = func(_ *Session, _, _ string, choices models.Choices, _ *contracts.Plan) {
 		got = choices
 	}
 	a.choices.Executor = models.Choice{Agent: "codex", Model: "gpt-6-astra", Variant: "max"}

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -31,7 +30,7 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 		yes, noTUI, allowDirty, keepWT, apply bool
 		maxIter                               int
 		name                                  string
-		planPath                              string
+		planPaths                             []string
 		plannerModel, executorModel           string
 		reviewerModel                         string
 	)
@@ -67,31 +66,31 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 			if err := cfg.Validate(); err != nil {
 				return err
 			}
+			// Plan files pointed at by --plan or @file.md mentions in the
+			// prompt skip the planner stage; the mentions leave the prompt.
+			plan, prompt, err := planFiles(prompt, planPaths)
+			if err != nil {
+				return err
+			}
 			opts := pipeline.Options{
 				Repo:         cfg.Repo,
 				Prompt:       prompt,
 				Name:         name,
+				Plan:         plan,
 				AllowDirty:   allowDirty,
 				KeepWorktree: keepWT,
 				Apply:        apply,
-			}
-			if planPath != "" {
-				plan, err := loadPlanFile(planPath)
-				if err != nil {
-					return err
-				}
-				opts.Plan = plan
 			}
 			if noTUI || yes || !isTTY() {
 				p := &pipeline.Pipeline{Cfg: cfg, Opts: opts}
 				return runPlain(cmd.Context(), p, yes)
 			}
-			return launchDashboard(cmd.Context(), cfg, opts, prompt, name, true)
+			return launchDashboard(cmd.Context(), cfg, opts, prompt, name, true, planPaths)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "worktree/branch name to create for this run (defaults to <current-branch>)")
-	cmd.Flags().StringVar(&planPath, "plan", "", "path to an existing plan JSON; skips the planner stage")
+	cmd.Flags().StringArrayVar(&planPaths, "plan", nil, "plan file(s) (.md or .json); skips the planner stage (mentions like @docs/plan.md in the prompt work too)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&noTUI, "no-tui", false, "disable the TUI and use plain prompts")
 	cmd.Flags().BoolVar(&allowDirty, "allow-dirty", false, "run even if the target repo has uncommitted changes")
@@ -164,7 +163,7 @@ func runDashboardDefault(cmd *cobra.Command, configPath, repo, artifactsDir stri
 		return err
 	}
 	opts := pipeline.Options{Repo: cfg.Repo, AllowDirty: allowDirty, KeepWorktree: keepWT, Apply: apply}
-	return launchDashboard(cmd.Context(), cfg, opts, "", "", false)
+	return launchDashboard(cmd.Context(), cfg, opts, "", "", false, nil)
 }
 
 // runPlain drives a single pipeline with the line-oriented gate.
@@ -183,8 +182,9 @@ func runPlain(ctx context.Context, p *pipeline.Pipeline, yes bool) error {
 
 // launchDashboard opens the interactive dashboard. template supplies the per-run
 // options (Repo plus flags); every submitted prompt clones it. initialName backs
-// the auto-started run when autoStart is set.
-func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.Options, initialPrompt, initialName string, autoStart bool) error {
+// the auto-started run when autoStart is set. planPaths are --plan files merged
+// into every run started from the dashboard.
+func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.Options, initialPrompt, initialName string, autoStart bool, planPaths []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -200,7 +200,10 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 
 	app := tui.NewApp(cfg, cfg.ArtifactsDir)
 	app.SetInitial(initialPrompt, initialName, autoStart)
-	app.OnStart = func(s *tui.Session, name, prompt string, choices models.Choices) {
+	app.PlanFromPrompt = func(prompt string) (*contracts.Plan, string, error) {
+		return planFiles(prompt, planPaths)
+	}
+	app.OnStart = func(s *tui.Session, name, prompt string, choices models.Choices, plan *contracts.Plan) {
 		mu.Lock()
 		if closed {
 			mu.Unlock()
@@ -211,6 +214,7 @@ func launchDashboard(ctx context.Context, cfg *config.Config, template pipeline.
 
 		opts := template
 		opts.Prompt = prompt
+		opts.Plan = plan
 		if name != "" {
 			opts.Name = name
 		}
@@ -335,21 +339,20 @@ func artifactBase(artifactsDir string) string {
 	return config.DefaultArtifactsDir()
 }
 
-// loadPlanFile reads and validates a plan JSON produced by a previous run (or
-// hand-written against plan.schema.json).
-func loadPlanFile(path string) (*contracts.Plan, error) {
-	data, err := os.ReadFile(path)
+// planFiles resolves a run's plan inputs: the --plan files plus every
+// @file.md/@file.json mention in the prompt. It returns the merged plan (nil
+// when there are none) and the prompt with the mentions stripped.
+func planFiles(prompt string, flags []string) (*contracts.Plan, string, error) {
+	paths, rest := contracts.ExtractPlanFiles(prompt)
+	paths = append(append([]string{}, flags...), paths...)
+	if len(paths) == 0 {
+		return nil, prompt, nil
+	}
+	plan, err := contracts.LoadPlans(paths)
 	if err != nil {
-		return nil, fmt.Errorf("read plan: %w", err)
+		return nil, prompt, err
 	}
-	var plan contracts.Plan
-	if err := json.Unmarshal(data, &plan); err != nil {
-		return nil, fmt.Errorf("parse plan %s: %w", path, err)
-	}
-	if err := plan.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid plan %s: %w", path, err)
-	}
-	return &plan, nil
+	return plan, rest, nil
 }
 
 func promptFrom(args []string, stdin *os.File) (string, error) {

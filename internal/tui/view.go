@@ -703,7 +703,7 @@ func (a *App) renderFooter(w int) string {
 	e := a.current()
 	switch {
 	case a.inputFocus:
-		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("ctrl+u", "clear"), keyHint("esc", "back")}
+		hints = []string{keyHint("enter", "next/run"), keyHint("tab", "switch"), keyHint("@plan.md", "skip planner"), keyHint("ctrl+u", "clear"), keyHint("esc", "back")}
 	case e != nil && e.Gate != nil:
 		switch {
 		case e.Gate.kind == gateAgent:
