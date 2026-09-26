@@ -531,3 +531,59 @@ func TestFailedReviewResumesAtReviewer(t *testing.T) {
 		t.Fatalf("state=%s error=%q, want done with no error", retry.Run.State, retry.Run.Error)
 	}
 }
+
+func TestResumeRebuildsDeletedWorktree(t *testing.T) {
+	repo := setupRepo(t)
+	cfg := baseConfig(t, repo)
+	gate := &recordingGate{}
+
+	execRuns, reviewOK := 0, false
+	factory := func(name string) (agent.Agent, error) {
+		switch name {
+		case "claude":
+			return fakeAgent{"claude", agent.Planner, func(context.Context, agent.Request) (*agent.Result, error) {
+				return &agent.Result{Structured: planJSON(t)}, nil
+			}}, nil
+		case "codex":
+			return fakeAgent{"codex", agent.Executor, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				execRuns++
+				_ = os.WriteFile(filepath.Join(r.Dir, "feature.txt"), []byte("ok\n"), 0o644)
+				return &agent.Result{Structured: json.RawMessage(`{"status":"done","summary":"x"}`)}, nil
+			}}, nil
+		case "opencode":
+			return fakeAgent{"opencode", agent.Reviewer, func(_ context.Context, r agent.Request) (*agent.Result, error) {
+				if !reviewOK {
+					return &agent.Result{Structured: json.RawMessage(`{"verdict":"","summary":""}`)}, nil
+				}
+				if _, err := os.Stat(filepath.Join(r.Dir, "feature.txt")); err != nil {
+					t.Error("rebuilt worktree is missing the executor's changes")
+				}
+				return &agent.Result{Structured: json.RawMessage(`{"verdict":"pass","summary":"ok"}`)}, nil
+			}}, nil
+		}
+		return nil, nil
+	}
+
+	p := &Pipeline{Cfg: cfg, Opts: Options{Repo: repo, Prompt: "add feature", Name: "test-run"}, Gate: gate, AgentFactory: factory}
+	if err := p.Execute(context.Background()); err == nil {
+		t.Fatal("first run should fail")
+	}
+	if p.Run.Base == "" {
+		t.Fatal("the run should record its base commit")
+	}
+	// Runs failed by older versions lost their worktree and branch.
+	gitRun(t, repo, "worktree", "remove", "--force", p.Run.Worktree)
+	gitRun(t, repo, "branch", "-D", p.Run.Branch)
+
+	reviewOK, execRuns = true, 0
+	retry := &Pipeline{Cfg: cfg, Run: p.Run, Opts: Options{Repo: repo, Prompt: "add feature", From: agent.Reviewer}, Gate: gate, AgentFactory: factory}
+	if err := retry.Execute(context.Background()); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if execRuns != 0 {
+		t.Fatalf("executor ran %d times; the patch should have restored its work", execRuns)
+	}
+	if retry.Run.State != artifact.StateDone || retry.Run.Commit == "" {
+		t.Fatalf("state=%s commit=%q, want a committed done run", retry.Run.State, retry.Run.Commit)
+	}
+}

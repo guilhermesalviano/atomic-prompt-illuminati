@@ -106,9 +106,10 @@ func newRunCmd(configPath, repo, artifactsDir *string) *cobra.Command {
 
 func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
 	var yes, keepWT bool
+	var from string
 	cmd := &cobra.Command{
 		Use:   "resume <run-id>",
-		Short: "resume a failed or interrupted run in its existing worktree",
+		Short: "resume a failed or interrupted run, rebuilding its worktree if it is gone",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			base := artifactBase(*artifactsDir)
@@ -120,19 +121,25 @@ func newResumeCmd(configPath, artifactsDir *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := os.Stat(run.Worktree); err != nil {
+			switch agent.Kind(from) {
+			case agent.Planner, agent.Executor, agent.Reviewer:
+			default:
+				return fmt.Errorf("--from must be planner, executor or reviewer, got %q", from)
+			}
+			if _, err := os.Stat(run.Worktree); err != nil && run.InPlace {
 				return fmt.Errorf("worktree for %s is gone (%s); cannot resume", run.ID, run.Worktree)
 			}
 			p := &pipeline.Pipeline{
 				Cfg:  cfg,
 				Run:  run,
-				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: keepWT},
+				Opts: pipeline.Options{Repo: run.Repo, Prompt: run.Prompt, KeepWorktree: keepWT, From: agent.Kind(from)},
 			}
 			return runPlain(cmd.Context(), p, yes)
 		},
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "auto-approve all gates")
 	cmd.Flags().BoolVar(&keepWT, "keep-worktree", true, "keep the worktree on failure")
+	cmd.Flags().StringVar(&from, "from", "planner", "stage to resume at: planner, executor or reviewer")
 	return cmd
 }
 

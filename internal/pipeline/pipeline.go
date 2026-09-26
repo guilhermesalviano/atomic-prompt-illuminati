@@ -215,10 +215,16 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 			if err := worktree.Add(p.Opts.Repo, p.worktreePath, p.branch, base); err != nil {
 				return err
 			}
+			run.Base = base
 			if err := run.SetState(artifact.StateWorktree); err != nil {
 				return err
 			}
 			p.Gate.Info("worktree " + p.worktreePath + " on " + p.branch)
+		}
+	}
+	if !created && !run.InPlace {
+		if err := p.rebuildWorktree(); err != nil {
+			return err
 		}
 	}
 	unlock, err = worktree.LockCheckout(p.worktreePath)
@@ -498,6 +504,39 @@ func (p *Pipeline) adoptWorktree() error {
 		_ = worktree.Prune(p.Opts.Repo)
 	}
 	return worktree.Checkout(p.Opts.Repo, p.worktreePath, p.branch)
+}
+
+// rebuildWorktree recreates a resumed run's deleted checkout: the branch is
+// restored (or recreated from the recorded base) and, unless planning starts
+// over, the recorded diff.patch brings back the executor's changes.
+func (p *Pipeline) rebuildWorktree() error {
+	if _, err := os.Stat(p.worktreePath); err == nil {
+		return nil
+	}
+	p.Gate.Info("worktree " + p.worktreePath + " is gone; rebuilding it")
+	_ = worktree.Prune(p.Opts.Repo)
+	if wt := worktree.ForBranch(p.Opts.Repo, p.branch); wt != "" {
+		return fmt.Errorf("branch %q is checked out at %s; remove that worktree before retrying", p.branch, wt)
+	}
+	if worktree.BranchExists(p.Opts.Repo, p.branch) {
+		if err := worktree.Checkout(p.Opts.Repo, p.worktreePath, p.branch); err != nil {
+			return err
+		}
+	} else if err := worktree.Add(p.Opts.Repo, p.worktreePath, p.branch, p.Run.Base); err != nil {
+		return err
+	}
+	if p.Opts.From == agent.Planner || p.Opts.From == "" {
+		return nil
+	}
+	patch := p.Run.Path("diff.patch")
+	if info, err := os.Stat(patch); err != nil || info.Size() == 0 {
+		return nil
+	}
+	if err := worktree.Apply(p.worktreePath, patch); err != nil {
+		return fmt.Errorf("rebuilt the worktree but could not restore its changes: %w", err)
+	}
+	p.Gate.Info("restored the recorded changes from diff.patch")
+	return nil
 }
 
 // cleanup removes the worktree and branch after a failed or aborted run. A

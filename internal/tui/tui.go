@@ -1138,8 +1138,8 @@ func (a *App) retryRun() tea.Cmd {
 	case a.OnRetry == nil:
 		return nil
 	}
-	if _, err := os.Stat(e.Run.Worktree); err != nil {
-		a.notice = "can't retry: the run's worktree is gone"
+	if _, err := os.Stat(e.Run.Worktree); err != nil && e.Run.InPlace {
+		a.notice = "can't retry: the run's checkout is gone"
 		return nil
 	}
 	from := retryStage(a.tab, e)

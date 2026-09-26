@@ -225,6 +225,13 @@ func Snapshot(worktree string) (string, error) {
 	return b.String(), nil
 }
 
+// Apply applies a patch file (a Diff of this branch) to the worktree and
+// stages it.
+func Apply(worktree, patch string) error {
+	_, err := git(worktree, "apply", "--index", "--whitespace=nowarn", patch)
+	return err
+}
+
 // Stage adds every change in the worktree to the index without committing.
 func Stage(worktree string) error {
 	_, err := git(worktree, "add", "-A")

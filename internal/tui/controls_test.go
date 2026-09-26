@@ -196,13 +196,27 @@ func TestRetryFailedRunResumesAtActiveTab(t *testing.T) {
 	}
 }
 
-func TestRetryNeedsTheWorktree(t *testing.T) {
+func TestRetryRebuildsMissingWorktree(t *testing.T) {
 	a := NewApp(testConfig(), t.TempDir())
 	run := &artifact.Run{ID: "r", State: artifact.StateFailed, Dir: t.TempDir(), Worktree: "/nonexistent/wt"}
 	a.entries = []*Entry{entryFromRun(run)}
+	called := false
+	a.OnRetry = func(*Session, *artifact.Run, agent.Kind, models.Choices) { called = true }
+	_, cmd := a.handleKey(key("t"))
+	if cmd == nil {
+		t.Fatalf("a missing worktree is rebuilt by the pipeline, got notice %q", a.notice)
+	}
+	cmd()
+	if !called {
+		t.Fatal("retry was not started")
+	}
+
+	a = NewApp(testConfig(), t.TempDir())
+	run = &artifact.Run{ID: "r", State: artifact.StateFailed, Dir: t.TempDir(), Worktree: "/nonexistent/wt", InPlace: true}
+	a.entries = []*Entry{entryFromRun(run)}
 	a.OnRetry = func(*Session, *artifact.Run, agent.Kind, models.Choices) { t.Error("must not retry") }
-	if _, cmd := a.handleKey(key("t")); cmd != nil || !strings.Contains(a.notice, "worktree is gone") {
-		t.Fatalf("expected a worktree notice, got %q", a.notice)
+	if _, cmd := a.handleKey(key("t")); cmd != nil || !strings.Contains(a.notice, "checkout is gone") {
+		t.Fatalf("an in-place checkout can't be rebuilt, got notice %q", a.notice)
 	}
 }
 

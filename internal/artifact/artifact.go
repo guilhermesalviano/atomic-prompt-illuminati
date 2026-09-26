@@ -47,11 +47,14 @@ func (u *Usage) Add(in, out int, cost float64) {
 
 // Run is the persisted record of one orchestrator run.
 type Run struct {
-	ID        string    `json:"id"`
-	Prompt    string    `json:"prompt"`
-	Repo      string    `json:"repo"`
-	Branch    string    `json:"branch"`
-	Worktree  string    `json:"worktree"`
+	ID       string `json:"id"`
+	Prompt   string `json:"prompt"`
+	Repo     string `json:"repo"`
+	Branch   string `json:"branch"`
+	Worktree string `json:"worktree"`
+	// Base is the commit the run's branch started from, used to rebuild a
+	// deleted worktree on retry.
+	Base string `json:"base,omitempty"`
 	// InPlace runs use the user's checkout; cleanup must never remove it.
 	InPlace   bool      `json:"in_place,omitempty"`
 	Dir       string    `json:"dir"`
