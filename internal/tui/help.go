@@ -31,7 +31,7 @@ var helpGroups = []helpGroup{
 	{"VIEWS", []helpKey{
 		{"tab / →", "next view"},
 		{"shift+tab / ←", "previous view"},
-		{"1–4", "activity · plan · review · diff"},
+		{"1–5", "activity · plan · review · diff · support"},
 		{"d", "diff aside"},
 		{"pgup / pgdn", "scroll"},
 		{"g / G", "top / bottom"},
@@ -55,6 +55,13 @@ var helpGroups = []helpGroup{
 		{"@plan.md", "skip the planner"},
 		{"ctrl+u", "clear field"},
 		{"ctrl+w", "delete word"},
+	}},
+	{"SUPPORT TAB", []helpKey{
+		{"enter / !", "type a command"},
+		{"enter", "run in the run's checkout"},
+		{"ctrl+c", "stop command"},
+		{"↑ ↓", "history"},
+		{"esc", "leave the command line"},
 	}},
 	{"GENERAL", []helpKey{
 		{"h", "this help"},

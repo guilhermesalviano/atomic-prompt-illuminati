@@ -348,8 +348,11 @@ func (p *Pipeline) Execute(ctx context.Context) (err error) {
 	if err := run.SetState(artifact.StateCommitting); err != nil {
 		return err
 	}
+	diff, _ := worktree.Snapshot(p.worktreePath)
+	p.Gate.Info("drafting commit message with opencode")
+	message := commitMessage(ctx, commitSpec(p.Cfg), p.worktreePath, p.Opts.Prompt, diff, plan.Summary, run.ID)
 	commit, err := retryStep(ctx, p, "commit", func() (string, error) {
-		return worktree.Commit(p.worktreePath, fmt.Sprintf("%s\n\nkor run %s", plan.Summary, run.ID))
+		return worktree.Commit(p.worktreePath, message)
 	})
 	if err != nil {
 		return err

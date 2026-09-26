@@ -344,7 +344,11 @@ func (a *App) renderMain(w, h int) string {
 	if w < 80 || rows-len(top)-len(flow)-2 < 1 {
 		flow = a.compactFlow(e, inner)
 	}
-	viewH := max(rows-len(top)-len(flow)-2, 1)
+	shellRow := 0
+	if a.tab == tabSupport {
+		shellRow = 1 // the command line sits under the scrollback
+	}
+	viewH := max(rows-len(top)-len(flow)-2-shellRow, 1)
 	content := a.contentLines(e, inner)
 	maxOff := max(0, len(content)-viewH)
 	off := min(a.scroll, maxOff)
@@ -358,6 +362,9 @@ func (a *App) renderMain(w, h int) string {
 	lines = append(lines, chunk...)
 	for i := len(chunk); i < viewH; i++ {
 		lines = append(lines, "")
+	}
+	if shellRow > 0 {
+		lines = append(lines, a.shellPrompt(e, inner))
 	}
 	lines = append(lines, flow...)
 
@@ -624,7 +631,7 @@ func (a *App) renderGate(e *Entry, w int) []string {
 
 func (a *App) tabBar(e *Entry, w, off, maxOff int) string {
 	if w < 60 {
-		return truncate(goldStyle.Bold(true).Render(fmt.Sprintf("%d %s", a.tab+1, tabNames[a.tab]))+mutedStyle.Render("  · tab/1–4 views"), w)
+		return truncate(goldStyle.Bold(true).Render(fmt.Sprintf("%d %s", a.tab+1, tabNames[a.tab]))+mutedStyle.Render("  · tab/1–5 views"), w)
 	}
 	var parts []string
 	for i, name := range tabNames {
@@ -633,6 +640,10 @@ func (a *App) tabBar(e *Entry, w, off, maxOff int) string {
 		case tabPlan:
 			if e.Plan != nil {
 				label += fmt.Sprintf(" %d", len(e.Plan.Steps))
+			}
+		case tabSupport:
+			if e.shellStop != nil {
+				label += " ●"
 			}
 		case tabReview:
 			if e.Review != nil {
@@ -692,6 +703,8 @@ func (a *App) contentLines(e *Entry, w int) []string {
 		lines = renderReview(e.Review, w)
 	case tabDiff:
 		lines = renderDiff(e.Diff, w)
+	case tabSupport:
+		lines = renderShell(e, w)
 	}
 	*c = contentCache{entry: e, tab: a.tab, width: w, ver: e.ver, lines: lines}
 	return lines

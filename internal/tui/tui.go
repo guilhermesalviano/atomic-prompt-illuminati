@@ -34,10 +34,11 @@ const (
 	tabPlan
 	tabReview
 	tabDiff
+	tabSupport
 	tabCount
 )
 
-var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff"}
+var tabNames = [tabCount]string{"Activity", "Plan", "Review", "Diff", "Support"}
 
 // inputField selects which footer field receives typing while the input is
 // focused. Leaving the name blank uses the current checkout directly.
@@ -83,6 +84,12 @@ type App struct {
 	inputName  []rune
 	inputFocus bool
 	field      inputField
+
+	// The Support tab's command line and its session-wide history.
+	shellInput  []rune
+	shellFocus  bool
+	shellHist   []string
+	shellHistAt int
 
 	tab     tab
 	scroll  int  // content offset from the top
@@ -290,15 +297,17 @@ type Entry struct {
 	Review  *contracts.Review
 	Diff    string
 	Logs    []logLine
+	Shell   []shellLine // Support tab scrollback
 	Started time.Time
 	Ended   time.Time
 
 	ver        int // bumped on every change; keys the render cache
 	logsLoaded bool
 	diffAt     time.Time
-	diffBusy   bool // a live snapshot is in flight
-	deleting   bool // a delete is in flight
-	publishing bool // commit and push is queued or running
+	diffBusy   bool               // a live snapshot is in flight
+	deleting   bool               // a delete is in flight
+	publishing bool               // commit and push is queued or running
+	shellStop  context.CancelFunc // non-nil while a Support command runs
 }
 
 // branch is the run's git branch, or the requested name before it exists.
@@ -748,6 +757,12 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.notice = "deleted, but " + t.warn.Error()
 		}
 
+	case shellOutMsg:
+		a.mutate(t.entry, func(e *Entry) { e.pushShell(t.line) })
+		return a, waitShell(t.ch)
+	case shellDoneMsg:
+		a.finishShell(t)
+
 	case tea.KeyMsg:
 		return a.handleKey(t)
 	case publishResultMsg:
@@ -777,6 +792,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if a.confirmQuit {
 		switch msg.String() {
 		case "q", "y", "ctrl+c":
+			a.stopShells()
 			return a, tea.Quit
 		default:
 			a.confirmQuit = false
@@ -842,6 +858,16 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	if e := a.current(); e != nil && a.tab == tabSupport {
+		if a.shellFocus {
+			return a.handleShellKey(e, msg)
+		}
+		if msg.String() == "!" || (msg.String() == "enter" && e.Gate == nil) {
+			a.shellFocus = true
+			return a, nil
+		}
+	}
+
 	if msg.String() == "h" {
 		a.help = true
 		return a, nil
@@ -896,7 +922,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				a.setTab((a.tab + tabCount - 1) % tabCount)
 				return a, nil
 			}
-		case "1", "2", "3", "4":
+		case "1", "2", "3", "4", "5":
 			if e.Gate.kind != gateAgent {
 				a.setTab(tab(msg.String()[0] - '1'))
 				return a, nil
@@ -938,7 +964,7 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.setTab((a.tab + 1) % tabCount)
 	case "shift+tab", "left":
 		a.setTab((a.tab + tabCount - 1) % tabCount)
-	case "1", "2", "3", "4":
+	case "1", "2", "3", "4", "5":
 		a.setTab(tab(msg.String()[0] - '1'))
 	case "pgdown", "ctrl+d", "J", "shift+down":
 		a.scrollBy(max(1, a.viewH/2))
@@ -1024,6 +1050,7 @@ func dropLastWord(s string) string {
 // because quitting cancels every in-flight run.
 func (a *App) quit() (tea.Model, tea.Cmd) {
 	if a.liveCount() == 0 {
+		a.stopShells()
 		return a, tea.Quit
 	}
 	a.confirmQuit = true
@@ -1207,12 +1234,13 @@ func (a *App) move(delta int) {
 
 func (a *App) setTab(t tab) {
 	a.tab = t
+	a.shellFocus = false
 	a.resetScroll()
 }
 
 func (a *App) resetScroll() {
 	a.scroll = 0
-	a.follow = a.tab == tabActivity
+	a.follow = a.tab == tabActivity || a.tab == tabSupport
 }
 
 func (a *App) scrollBy(d int) {

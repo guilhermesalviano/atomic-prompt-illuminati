@@ -36,8 +36,18 @@ in-place run removes only its run history. A detached HEAD requires a branch nam
 
 The dashboard starts with the left sidebar closed. Press `b` to toggle the run
 list. On narrow terminals it opens at full width: use `↑↓` to select a run and
-`enter` to open it, or `b`/`esc` to close the list. Use `tab` or `1`–`4` for
-Activity, Plan, Review, and Diff; `n` starts a prompt and `m` opens model selection.
+`enter` to open it, or `b`/`esc` to close the list. Use `tab` or `1`–`5` for
+Activity, Plan, Review, Diff, and Support; `n` starts a prompt and `m` opens model selection.
+
+The Support tab is a terminal for the selected run: press `enter` or `!`, type a
+shell command and press `enter` to run it in the run's checkout. Output streams
+into the tab, `ctrl+c` stops the command, `↑↓` recalls history, and `clear`
+empties the view. Commands get no stdin, so editors and pagers won't work.
+
+Commits use your own git identity (`user.name` / `user.email`), so set an email
+linked to your GitHub account. opencode drafts each commit message from your
+original prompt and the diff; if drafting fails, the prompt (or plan summary) is
+used instead.
 
 Executor changes are staged before review. Press `p` to commit and push the
 selected run, including after a run finishes, or `ctrl+p` while typing a prompt.

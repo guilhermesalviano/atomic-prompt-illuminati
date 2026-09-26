@@ -75,7 +75,8 @@ func publishRun(run *artifact.Run) error {
 			return err
 		}
 	}
-	commit, err := worktree.Commit(run.Worktree, fmt.Sprintf("%s\n\nkor run %s", run.Prompt, run.ID))
+	message := commitMessage(context.Background(), runCommitSpec(run), run.Worktree, run.Prompt, diff, run.Prompt, run.ID)
+	commit, err := worktree.Commit(run.Worktree, message)
 	if err != nil {
 		return err
 	}
