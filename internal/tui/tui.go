@@ -21,6 +21,7 @@ import (
 	"github.com/guibs/atomic-prompt-illuminati/internal/config"
 	"github.com/guibs/atomic-prompt-illuminati/internal/contracts"
 	"github.com/guibs/atomic-prompt-illuminati/internal/models"
+	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
 	"github.com/guibs/atomic-prompt-illuminati/internal/ui"
 	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
 )
@@ -81,6 +82,11 @@ type App struct {
 	cache   contentCache
 
 	confirmQuit bool
+	confirmDel  *Entry // run awaiting a delete confirmation
+	notice      string // one-shot footer message, cleared by the next key
+
+	// discard tears down a finished run's worktree, branch and artifacts.
+	discard func(*artifact.Run) (warn, err error)
 
 	// The right aside shows the selected run's full diff.
 	showAside   bool
@@ -112,7 +118,7 @@ type contentCache struct {
 
 // NewApp builds the dashboard, loading historical runs from baseDir.
 func NewApp(cfg *config.Config, baseDir string) *App {
-	a := &App{cfg: cfg, width: 100, height: 30, follow: true, showAside: true}
+	a := &App{cfg: cfg, width: 100, height: 30, follow: true, showAside: true, discard: pipeline.Discard}
 	a.choices = models.ChoicesFromConfig(cfg)
 	runs, _ := artifact.List(baseDir)
 	for _, r := range runs {
@@ -277,6 +283,15 @@ type Entry struct {
 	logsLoaded bool
 	diffAt     time.Time
 	diffBusy   bool // a live snapshot is in flight
+	deleting   bool // a delete is in flight
+}
+
+// branch is the run's git branch, or the requested name before it exists.
+func (e *Entry) branch() string {
+	if e.Run != nil && e.Run.Branch != "" {
+		return e.Run.Branch
+	}
+	return e.Name
 }
 
 func newStages() map[agent.Kind]*StageInfo {
@@ -536,6 +551,10 @@ type (
 	catalogMsg struct {
 		catalog *models.Catalog
 	}
+	deletedMsg struct {
+		entry     *Entry
+		warn, err error
+	}
 	tickMsg time.Time
 )
 
@@ -682,6 +701,20 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			e.push(logLine{level: levelStage, text: "run finished: " + string(e.State)})
 		})
 
+	case deletedMsg:
+		if t.err != nil {
+			a.mutate(t.entry, func(e *Entry) {
+				e.deleting = false
+				e.ErrText = "delete failed: " + t.err.Error()
+				e.touch()
+			})
+			return a, nil
+		}
+		a.removeEntry(t.entry)
+		if t.warn != nil {
+			a.notice = "deleted, but " + t.warn.Error()
+		}
+
 	case tea.KeyMsg:
 		return a.handleKey(t)
 	}
@@ -689,12 +722,21 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	a.notice = ""
 	if a.confirmQuit {
 		switch msg.String() {
 		case "q", "y", "ctrl+c":
 			return a, tea.Quit
 		default:
 			a.confirmQuit = false
+		}
+		return a, nil
+	}
+
+	if e := a.confirmDel; e != nil {
+		a.confirmDel = nil
+		if msg.String() == "y" {
+			return a, a.deleteRun(e)
 		}
 		return a, nil
 	}
@@ -790,6 +832,8 @@ func (a *App) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.asideScroll = min(a.asideScroll+max(1, a.asideH/2), a.asideMax)
 	case "[":
 		a.asideScroll = max(a.asideScroll-max(1, a.asideH/2), 0)
+	case "x", "delete":
+		a.askDelete()
 	case "a":
 		a.answer(ui.Approve)
 	case "f":
@@ -856,6 +900,53 @@ func (a *App) quit() (tea.Model, tea.Cmd) {
 	}
 	a.confirmQuit = true
 	return a, nil
+}
+
+// askDelete asks before deleting the selected run. A live run's worktree is
+// still in use, so it has to finish first.
+func (a *App) askDelete() {
+	e := a.current()
+	switch {
+	case e == nil || e.deleting:
+	case e.Live:
+		a.notice = "can't delete a running worktree; wait for it to finish"
+	default:
+		a.confirmDel = e
+	}
+}
+
+// deleteRun removes a finished run's worktree, branch and artifacts off the
+// UI goroutine.
+func (a *App) deleteRun(e *Entry) tea.Cmd {
+	e.deleting = true
+	e.touch()
+	run, discard := e.Run, a.discard
+	return func() tea.Msg {
+		if run == nil {
+			return deletedMsg{entry: e} // never got past preflight: nothing on disk
+		}
+		warn, err := discard(run)
+		return deletedMsg{entry: e, warn: warn, err: err}
+	}
+}
+
+// removeEntry drops e from the list, keeping the cursor on a neighbour.
+func (a *App) removeEntry(e *Entry) {
+	for i, x := range a.entries {
+		if x != e {
+			continue
+		}
+		selected := i == a.cursor
+		a.entries = append(a.entries[:i], a.entries[i+1:]...)
+		if i < a.cursor || a.cursor >= len(a.entries) {
+			a.cursor = max(0, a.cursor-1)
+		}
+		if selected {
+			a.asideScroll = 0
+			a.resetScroll()
+		}
+		return
+	}
 }
 
 func (a *App) liveCount() int {

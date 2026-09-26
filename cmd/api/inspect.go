@@ -3,14 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
 	"github.com/guibs/atomic-prompt-illuminati/internal/artifact"
+	"github.com/guibs/atomic-prompt-illuminati/internal/pipeline"
 	"github.com/guibs/atomic-prompt-illuminati/internal/preflight"
-	"github.com/guibs/atomic-prompt-illuminati/internal/worktree"
 )
 
 func newListCmd(artifactsDir *string) *cobra.Command {
@@ -104,15 +103,11 @@ func newCleanCmd(artifactsDir *string) *cobra.Command {
 				return fmt.Errorf("provide a run-id or --all")
 			}
 			for _, r := range runs {
-				if _, err := os.Stat(r.Worktree); err == nil {
-					if err := worktree.Remove(r.Repo, r.Worktree); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "warn: remove worktree: %v\n", err)
-					}
+				warn, err := pipeline.Discard(r)
+				if warn != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warn: %v\n", warn)
 				}
-				if r.Branch != "" {
-					_ = worktree.DeleteBranch(r.Repo, r.Branch)
-				}
-				if err := os.RemoveAll(r.Dir); err != nil {
+				if err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "removed %s\n", r.ID)

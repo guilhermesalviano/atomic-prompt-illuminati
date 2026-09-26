@@ -155,16 +155,34 @@ func (a *App) renderSidebar(w, h int) string {
 	if n := len(a.entries); n > 0 {
 		title += mutedStyle.Render(fmt.Sprintf(" %d", n))
 	}
+	// The mascot naps at the bottom when the list still has room for two runs.
+	listRows := rows
+	if rows >= koalaH+2*entryLines {
+		listRows = rows - koalaH
+	}
+	withKoala := func(lines []string) []string {
+		if listRows == rows {
+			return lines
+		}
+		for len(lines) < listRows {
+			lines = append(lines, "")
+		}
+		for _, l := range koala(moodSleep, a.frame, "", 0) {
+			lines = append(lines, lipgloss.PlaceHorizontal(inner, lipgloss.Center, l))
+		}
+		return lines
+	}
+
 	if len(a.entries) == 0 {
 		lines := []string{"",
 			mutedStyle.Render("No runs yet."), "",
 			textStyle.Render("type a prompt below"),
 			textStyle.Render("and press ") + goldStyle.Render("enter"),
 		}
-		return panel(title, lines, w, h, cFaint)
+		return panel(title, withKoala(lines), w, h, cFaint)
 	}
 
-	visible := max(1, (rows+1)/entryLines)
+	visible := max(1, (listRows+1)/entryLines)
 	if a.cursor < a.listTop {
 		a.listTop = a.cursor
 	}
@@ -206,9 +224,9 @@ func (a *App) renderSidebar(w, h int) string {
 		lines[len(lines)-1] = mutedStyle.Render(fmt.Sprintf("  ↑ %d more", a.listTop))
 	}
 	if rest := len(a.entries) - a.listTop - visible; rest > 0 {
-		lines = append(lines[:min(len(lines), rows-1)], mutedStyle.Render(fmt.Sprintf("  ↓ %d more", rest)))
+		lines = append(lines[:min(len(lines), listRows-1)], mutedStyle.Render(fmt.Sprintf("  ↓ %d more", rest)))
 	}
-	return panel(title, lines, w, h, cFaint)
+	return panel(title, withKoala(lines), w, h, cFaint)
 }
 
 func (a *App) entryIcon(e *Entry) string {
@@ -233,6 +251,8 @@ func (a *App) entryIcon(e *Entry) string {
 
 func (a *App) entryStateText(e *Entry) string {
 	switch {
+	case e.deleting:
+		return "deleting…"
 	case e.Gate != nil:
 		return "needs you"
 	case e.State == artifact.StateGatePlan || e.State == artifact.StateGateReview:
@@ -305,11 +325,7 @@ func (a *App) renderMain(w, h int) string {
 
 func (a *App) metaLine(e *Entry, w int) string {
 	var parts []string
-	branch := e.Name
-	if e.Run != nil && e.Run.Branch != "" {
-		branch = e.Run.Branch
-	}
-	if branch != "" {
+	if branch := e.branch(); branch != "" {
 		parts = append(parts, violetStyle.Render("⎇ "+branch))
 	}
 	if e.Iter > 0 {
@@ -644,6 +660,20 @@ func (a *App) welcome(w, h int) []string {
 // --- footer -----------------------------------------------------------------
 
 func (a *App) renderFooter(w int) string {
+	if e := a.confirmDel; e != nil {
+		lines := []string{redStyle.Bold(true).Render("⚠ Delete "+e.branch()+"?") +
+			textStyle.Render(" Removes its worktree, branch and run history.")}
+		if e.Run != nil && e.Run.Commit != "" && !e.Run.Pushed {
+			lines = append(lines, amberStyle.Render("Commit "+shortSHA(e.Run.Commit)+" was never pushed and will be lost."))
+		}
+		lines = append(lines, chip("y", "delete", cRed)+"  "+chip("esc", "keep", cMuted))
+		for i, l := range lines {
+			lines[i] = truncate(l, w-4)
+		}
+		box := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(cRed).
+			Padding(0, 1).Width(w - 2)
+		return box.Render(strings.Join(lines, "\n")) + "\n"
+	}
 	if a.confirmQuit {
 		n := a.liveCount()
 		msg := amberStyle.Bold(true).Render(fmt.Sprintf("⚠ %d run(s) in flight.", n)) +
@@ -687,7 +717,14 @@ func (a *App) renderFooter(w int) string {
 		hints = append(hints, keyHint("tab", "views"), keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit"))
 	default:
 		hints = []string{keyHint("n", "new prompt"), keyHint("m", "models"), keyHint("↑↓", "select"), keyHint("tab", "views"),
-			keyHint("pgup/pgdn", "scroll"), a.diffHint(), keyHint("q", "quit")}
+			keyHint("pgup/pgdn", "scroll"), a.diffHint()}
+		if e != nil && !e.Live {
+			hints = append(hints, keyHint("x", "delete"))
+		}
+		hints = append(hints, keyHint("q", "quit"))
+	}
+	if a.notice != "" {
+		return box + "\n" + truncate(" "+amberStyle.Render("⚠ "+a.notice), w)
 	}
 	return box + "\n" + truncate(" "+strings.Join(hints, mutedStyle.Render("  ·  ")), w)
 }
